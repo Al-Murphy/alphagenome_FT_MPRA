@@ -19,7 +19,7 @@ import pandas as pd
 from alphagenome.models import dna_output
 from alphagenome_research.model import embeddings as embeddings_module
 
-
+#symbolic names for the head types
 class HeadType(enum.Enum):
     """Types of prediction heads."""
     GENOME_TRACKS = 'genome_tracks'
@@ -42,6 +42,8 @@ class CustomHead(ABC, hk.Module):
     """Base class for custom prediction heads.
     
     Subclass this to create your own prediction heads for finetuning.
+    
+    A Haiku Module (`hk.Module`) - integrates with JAX/Haiku.
     
     Example:
         ```python
@@ -120,7 +122,7 @@ class CustomHead(ABC, hk.Module):
         return self.predict(embeddings, organism_index, **kwargs)
 
 
-# Registry for custom heads
+# Registry for custom heads - register with register_custom_head()
 _CUSTOM_HEAD_REGISTRY: dict[str, type[CustomHead]] = {}
 _CUSTOM_HEAD_CONFIG_REGISTRY: dict[str, HeadConfig] = {}
 

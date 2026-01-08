@@ -2,7 +2,7 @@
 
 This repository provides utilities for finetuning the AlphaGenome model with custom prediction heads and parameter freezing capabilities, **without modifying the original `alphagenome_research` codebase**.
 
-Downstream applications will be fine-tuning on lentiMPRA data.
+Downstream applications will include fine-tuning on lentiMPRA data.
 
 ## Architecture
 
@@ -31,7 +31,7 @@ Heads (task-specific predictions):
 
 **Fine-tuning: Custom Heads**: Define and register your own prediction heads for task-specific finetuning.
 
-The `alphagenome_ft` code is included in this repository. Make sure you have [`alphagenome_research`](https://github.com/google-deepmind/alphagenome_research/) installed to use it.
+The `alphagenome_ft` mini-package is included in this repository. Make sure you have [`alphagenome_research`](https://github.com/google-deepmind/alphagenome_research/) installed to use it.
 
 OPTION A: create_model_with_custom_heads()
   * Creates model with custom heads ONLY
@@ -166,6 +166,11 @@ model = create_model_with_custom_heads(
     'all_folds',
     custom_heads=['my_mpra'],
 ) #if using CPU - device=jax.devices('cpu')[0]
+
+# You can list the custom heads
+from alphagenome_ft import list_custom_heads
+
+list_custom_heads()
 
 # 4. Freeze everything except your custom head
 model.freeze_except_head('my_mpra')

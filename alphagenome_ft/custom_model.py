@@ -2,6 +2,33 @@
 Custom AlphaGenome model wrapper with finetuning support.
 
 Provides an extended model class that supports custom heads and parameter freezing.
+
+Most common use case will be create_model_with_custom_heads() which creates a new model with custom heads only.
+
+The data flow for this is:
+
+DNA Sequence (one-hot encoded)
+    ↓
+AlphaGenome Backbone (pretrained, frozen)
+    ├─ SequenceEncoder
+    ├─ TransformerTower  
+    └─ SequenceDecoder
+    ↓
+Multi-resolution Embeddings
+    ├─ embeddings_1bp (high resolution)
+    ├─ embeddings_128bp (low resolution)
+    └─ embeddings_pair (pairwise)
+    ↓
+Custom Head (trainable)
+    ├─ Your prediction layers
+    └─ Your loss function
+    ↓
+Predictions + Loss
+
+
+A key function that makes this approach work is `_forward_with_custom_heads` which gets the embeddings from the 
+backbone and runs the custom heads on them. It's a Haiku transform_with_state function that returns the predictions 
+and embeddings.
 """
 
 from __future__ import annotations
@@ -27,6 +54,49 @@ from alphagenome_research.model.metadata import metadata as metadata_lib
 
 from alphagenome_ft import parameter_utils
 from alphagenome_ft import custom_heads as custom_heads_module
+
+
+class _PredictionsDict:
+    """Wrapper for predictions that allows mixing OutputType enum keys with string keys.
+    
+    This is needed when add new heads to existing model heads because JAX's tree utilities 
+    can't handle dictionaries with mixed key types (OutputType enums vs strings). This 
+    class stores them separately but allows dict-like access.
+    """
+    def __init__(self, standard_predictions, custom_predictions):
+        self._standard = standard_predictions
+        self._custom = custom_predictions
+    
+    def __getitem__(self, key):
+        # Try standard predictions first (OutputType enum keys)
+        if isinstance(key, dna_output.OutputType):
+            if key in self._standard:
+                return self._standard[key]
+            raise KeyError(f"Key {key} not found in standard predictions")
+        # Then try custom predictions (string keys)
+        if key in self._custom:
+            return self._custom[key]
+        raise KeyError(f"Key {key} not found in predictions")
+    
+    def __contains__(self, key):
+        if isinstance(key, dna_output.OutputType):
+            return key in self._standard
+        else:
+            return key in self._custom
+    
+    def keys(self):
+        """Return all keys (standard OutputType keys and custom string keys)."""
+        return list(self._standard.keys()) + list(self._custom.keys())
+    
+    def get(self, key, default=None):
+        if isinstance(key, dna_output.OutputType):
+            return self._standard.get(key, default)
+        else:
+            return self._custom.get(key, default)
+    
+    def items(self):
+        """Return all items."""
+        return list(self._standard.items()) + list(self._custom.items())
 
 
 class CustomAlphaGenomeModel:
@@ -93,7 +163,43 @@ class CustomAlphaGenomeModel:
         
         # Set forward functions
         if custom_forward_fn is not None:
-            self._predict = jax.jit(custom_forward_fn)
+            # Wrap custom forward function to process predictions like base model
+            # This ensures predictions go through extract_predictions() and reverse_complement()
+            from alphagenome_research.model.dna_model import extract_predictions
+            from alphagenome_research.model import augmentation
+            
+            # Capture custom_heads_list in closure
+            custom_heads_set = set(custom_heads_list or [])
+            
+            def wrapped_predict(
+                params, state, sequences, organism_indices,
+                *, negative_strand_mask, strand_reindexing
+            ):
+                # Get raw predictions from custom forward function
+                raw_predictions = custom_forward_fn(params, state, sequences, organism_indices)
+                
+                # Separate standard predictions and custom head predictions
+                standard_predictions = {k: v for k, v in raw_predictions.items() 
+                                       if k not in custom_heads_set and k != 'embeddings_1bp'}
+                custom_head_predictions = {k: v for k, v in raw_predictions.items() 
+                                          if k in custom_heads_set}
+                
+                # Process standard predictions through extract_predictions and reverse_complement
+                extracted = extract_predictions(standard_predictions)
+                reversed_preds = augmentation.reverse_complement(
+                    extracted,
+                    negative_strand_mask,
+                    strand_reindexing=strand_reindexing,
+                    sequence_length=sequences.shape[1],
+                )
+                
+                # Return a wrapper that allows dict-like access but stores keys separately
+                # This avoids JAX tree processing issues with mixed key types
+                return _PredictionsDict(reversed_preds, custom_head_predictions)
+            
+            # Don't jit the wrapper - jit the inner forward function instead
+            # The wrapper returns a custom object that JAX can't process as a pytree
+            self._predict = wrapped_predict
         else:
             self._predict = base_model._predict
         
@@ -322,9 +428,11 @@ def create_model_with_custom_heads(
         predictions = {}
         
         # Run custom heads
+        # Get number of organisms from metadata (should be 2: human and mouse)
+        num_organisms = len(metadata)
         with hk.name_scope('head'):
             for head_name in custom_heads:
-                head = custom_heads_module.create_custom_head(head_name, metadata, num_organisms=8)
+                head = custom_heads_module.create_custom_head(head_name, metadata, num_organisms=num_organisms)
                 predictions[head_name] = head(embeddings, organism_index)
         
         return predictions, embeddings
@@ -478,9 +586,11 @@ def add_custom_heads_to_model(
         predictions, embeddings = alphagenome(dna_sequence, organism_index)
         
         # Add predictions from custom heads
+        # Get number of organisms from metadata (should be 2: human and mouse)
+        num_organisms = len(metadata)
         with hk.name_scope('head'):
             for head_name in custom_heads:
-                head = custom_heads_module.create_custom_head(head_name, metadata, num_organisms=8)
+                head = custom_heads_module.create_custom_head(head_name, metadata, num_organisms=num_organisms)
                 predictions[head_name] = head(embeddings, organism_index)
         
         return predictions, embeddings

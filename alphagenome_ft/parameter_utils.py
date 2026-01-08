@@ -2,6 +2,46 @@
 Utilities for managing and manipulating AlphaGenome model parameters.
 
 Provides functions for freezing/unfreezing parameters and inspecting parameter trees.
+
+AlphaGenome Model Architecture (for reference):
+DNA Sequence (B, S, 4)
+    ↓
+SequenceEncoder (convolutional downsampling)
+    ↓
+TransformerTower (9 transformer blocks with pairwise attention)
+    ↓
+SequenceDecoder (convolutional upsampling)
+    ↓
+Embeddings:
+  - embeddings_1bp: (B, S, 1536) - High resolution
+  - embeddings_128bp: (B, S//128, 3072) - Low resolution  
+  - embeddings_pair: (B, S//2048, S//2048, 128) - Pairwise
+    ↓
+Heads (task-specific predictions):
+  - ATAC, DNASE, RNA_SEQ, etc.
+  - YOUR_CUSTOM_HEAD ← Add here
+1. **Backbone**: Encoder + Transformer + Decoder 
+2. **Embeddings**: Multi-resolution representations 
+3. **Heads**: Task-specific prediction layers
+
+
+Parameter Paths:
+In JAX/Haiku, parameters are organized in a PyTree (nested dictionary structure). Each parameter has a "path" like:
+- `alphagenome/sequence_encoder/conv1/w` (backbone)
+- `head/atac/output/b` (standard head)
+- `head/mpra_head/~predict/hidden/w` (custom head)
+
+Core Functions:
+1. `_keypath_to_str(path_tuple)` - Converts JAX keypath tuples to readable strings.
+2. `freeze_parameters(params, freeze_paths, freeze_prefixes)` - Freeze specific parameters by applying `jax.lax.stop_gradient`.
+3. `unfreeze_parameters(params, unfreeze_paths, unfreeze_prefixes)` - Remove stop_gradient from parameters (make them trainable again).
+4. `freeze_backbone(params)` - Freeze encoder, transformer, and decoder (the backbone).
+5. `freeze_all_heads(params, except_heads)` - Freeze all heads except specified ones.
+6. `freeze_except_head(params, trainable_head)` - Freeze everything except a specific head (common finetuning pattern).
+7. `get_parameter_paths(params)` - Get all parameter paths in the tree.
+8. `get_head_parameter_paths(params)` - Get all head parameter paths.
+9. `get_backbone_parameter_paths(params)` - Get all backbone parameter paths.
+10. `count_parameters(params)` - Count total number of parameters.
 """
 
 from collections.abc import Callable, Mapping, Sequence
