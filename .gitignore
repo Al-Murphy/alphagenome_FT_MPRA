@@ -210,3 +210,5 @@ test.ipynb
 data/
 data/*
 *.code-workspace
+wandb/*
+wandb
