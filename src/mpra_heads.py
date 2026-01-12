@@ -126,8 +126,8 @@ class MPRAHead(CustomHead):
             organism_index: Organism indices for each batch element.
             
         Returns:
-            Dictionary with 'predictions' key containing a single scalar per sequence.
-            Shape: (batch, 1)
+            Per-position predictions array with shape (batch, sequence_length, num_tracks).
+            This format is compatible with AlphaGenome's augmentation/reverse-complement logic.
         """
         # Get embeddings based on mode
         if self._embedding_mode == '1bp':
@@ -147,38 +147,44 @@ class MPRAHead(CustomHead):
         per_position_predictions = hk.Linear(self._num_tracks, name='output')(x)
         # per_position_predictions shape: (batch, sequence_length, num_tracks)
         
-        # Extract center window using JAX-compatible dynamic slicing
-        seq_len = per_position_predictions.shape[1]
+        # Return per-position predictions directly (rank 3)
+        # This is compatible with AlphaGenome's reverse_complement logic for RNA_SEQ
+        return per_position_predictions
+    
+    def loss(self, predictions, batch):
+        """Compute loss for MPRA predictions.
         
-        # Calculate center region start position
+        Args:
+            predictions: Per-position predictions with shape (batch, sequence_length, num_tracks)
+            batch: Batch data containing 'targets' with shape (batch,) or (batch, num_tracks)
+        
+        Returns:
+            Dictionary with loss metrics
+        """
+        targets = batch.get('targets')
+        if targets is None:
+            return {'loss': jnp.array(0.0)}
+        
+        # predictions shape: (batch, sequence_length, num_tracks)
+        # Pool over center region to get scalar predictions for loss computation
+        seq_len = predictions.shape[1]
         center_start = (seq_len - self._center_window_size) // 2
         center_start = jnp.maximum(center_start, 0)
         
-        # Use dynamic_slice_in_dim which handles dynamic start indices
         center_predictions = jax.lax.dynamic_slice_in_dim(
-            per_position_predictions,
+            predictions,
             start_index=center_start,
             slice_size=self._center_window_size,
             axis=1
         )
         
-        # Pool over center region to get single scalar
+        # Pool to get scalar per batch
         if self._pooling_type == 'mean':
-            predictions = jnp.mean(center_predictions, axis=1)  # (batch, num_tracks)
+            pred_values = jnp.mean(center_predictions, axis=1)  # (batch, num_tracks)
         elif self._pooling_type == 'max':
-            predictions = jnp.max(center_predictions, axis=1)  # (batch, num_tracks)
+            pred_values = jnp.max(center_predictions, axis=1)  # (batch, num_tracks)
         elif self._pooling_type == 'sum':
-            predictions = jnp.sum(center_predictions, axis=1)  # (batch, num_tracks)
-        
-        return {'predictions': predictions}
-    
-    def loss(self, predictions, batch):
-        """Compute loss for MPRA predictions."""
-        targets = batch.get('targets')
-        if targets is None:
-            return {'loss': jnp.array(0.0)}
-        
-        pred_values = predictions['predictions']
+            pred_values = jnp.sum(center_predictions, axis=1)  # (batch, num_tracks)
         
         if targets.ndim == 1:
             targets = targets[:, None]
@@ -237,6 +243,9 @@ class EncoderMPRAHead(CustomHead):
     def predict(self, embeddings, organism_index, **kwargs):
         """Predict using raw encoder output (before transformer).
         
+        Returns:
+            Per-position predictions array with shape (batch, sequence_length//128, num_tracks).
+        
         Raises:
             AttributeError: If encoder_output is not available in embeddings.
             ValueError: If encoder_output is None.
@@ -246,7 +255,7 @@ class EncoderMPRAHead(CustomHead):
             raise AttributeError(
                 "EncoderMPRAHead requires 'encoder_output' in embeddings object. "
                 "Use MPRAHead with embedding_mode='128bp' if you want transformer features, "
-                "or implement ExtendedEmbeddings to provide encoder_output."
+                "or set use_encoder_output=True when creating the model."
             )
         
         if embeddings.encoder_output is None:
@@ -258,42 +267,50 @@ class EncoderMPRAHead(CustomHead):
         # Use raw encoder output (BEFORE transformer)
         x = embeddings.encoder_output  # (batch, seq_len//128, D)
         
-        # Upsample to 1bp resolution
-        x = jnp.repeat(x, 128, axis=1)
-        
-        # Prediction layers
+        # Prediction layers operating at 128bp resolution
         x = hk.Linear(256, name='hidden')(x)
         x = jax.nn.relu(x)
         per_position_predictions = hk.Linear(self._num_tracks, name='output')(x)
         
-        # Extract and pool center window
-        seq_len = per_position_predictions.shape[1]
+        # Return per-position predictions at 128bp resolution (rank 3)
+        # Shape: (batch, seq_len//128, num_tracks)
+        return per_position_predictions
+    
+    def loss(self, predictions, batch):
+        """Compute loss.
+        
+        Args:
+            predictions: Per-position predictions with shape (batch, sequence_length, num_tracks)
+            batch: Batch data containing 'targets' with shape (batch,) or (batch, num_tracks)
+        
+        Returns:
+            Dictionary with loss metrics
+        """
+        targets = batch.get('targets')
+        if targets is None:
+            return {'loss': jnp.array(0.0)}
+        
+        # predictions shape: (batch, sequence_length, num_tracks)
+        # Pool over center region to get scalar predictions for loss computation
+        seq_len = predictions.shape[1]
         center_start = (seq_len - self._center_window_size) // 2
         center_start = jnp.maximum(center_start, 0)
         
         center_predictions = jax.lax.dynamic_slice_in_dim(
-            per_position_predictions,
+            predictions,
             start_index=center_start,
             slice_size=self._center_window_size,
             axis=1
         )
         
+        # Pool to get scalar per batch
         if self._pooling_type == 'mean':
-            predictions = jnp.mean(center_predictions, axis=1)
+            pred_values = jnp.mean(center_predictions, axis=1)  # (batch, num_tracks)
         elif self._pooling_type == 'max':
-            predictions = jnp.max(center_predictions, axis=1)
+            pred_values = jnp.max(center_predictions, axis=1)  # (batch, num_tracks)
         elif self._pooling_type == 'sum':
-            predictions = jnp.sum(center_predictions, axis=1)
+            pred_values = jnp.sum(center_predictions, axis=1)  # (batch, num_tracks)
         
-        return {'predictions': predictions}
-    
-    def loss(self, predictions, batch):
-        """Compute loss."""
-        targets = batch.get('targets')
-        if targets is None:
-            return {'loss': jnp.array(0.0)}
-        
-        pred_values = predictions['predictions']
         if targets.ndim == 1:
             targets = targets[:, None]
         

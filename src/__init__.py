@@ -5,9 +5,15 @@ This package provides utility classes and functions for finetuning AlphaGenome m
 """
 
 from .mpra_heads import MPRAHead, EncoderMPRAHead
+from .data import LentiMPRADataset, MPRADataLoader
+from .training import train, validate
 
 __all__ = [
     'MPRAHead',
-    'EncoderMPRAHead'
+    'EncoderMPRAHead',
+    'LentiMPRADataset',
+    'MPRADataLoader',
+    'train',
+    'validate',
 ]
 

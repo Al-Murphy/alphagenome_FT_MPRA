@@ -14,4 +14,5 @@ dependencies = [
     "alphagenome-ft @ file:///grid/koo/home/amurphy/projects/alphagenome_ft",
     # After pushing to GitHub, replace above with:
     # "alphagenome-ft @ git+https://github.com/YOUR_USERNAME/alphagenome_ft.git",
+    "wandb>=0.23.1",
 ]

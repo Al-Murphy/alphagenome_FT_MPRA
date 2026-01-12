@@ -1,6 +1,9 @@
 # Source Utilities for AlphaGenome Finetuning
 
-This package provides utility classes for finetuning AlphaGenome models.
+This package provides utility classes and functions for finetuning AlphaGenome models on MPRA data.
 
-* ft_utils.py - functionality for fine-tuning AlphaGenome on MPRA data, includes an MPRAhead class that polls central predictions to give a single scalar value
+## Components
 
+* **`mpra_heads.py`** - Custom head implementations (`MPRAHead`, `EncoderMPRAHead`)
+* **`data.py`** - Dataset and DataLoader classes (`LentiMPRADataset`, `MPRADataLoader`)
+* **`training.py`** - Training loop functions (`train`, `validate`, `train_epoch`)
