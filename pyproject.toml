@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "alphagenome-ft-mpra"
 version = "0.1.0"
@@ -16,3 +20,6 @@ dependencies = [
     # "alphagenome-ft @ git+https://github.com/YOUR_USERNAME/alphagenome_ft.git",
     "wandb>=0.23.1",
 ]
+
+[tool.setuptools]
+packages = ["src"]

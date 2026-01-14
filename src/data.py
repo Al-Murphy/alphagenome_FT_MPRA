@@ -30,6 +30,7 @@ class LentiMPRADataset:
         reverse_complement_likelihood: float = 0.5,
         rng_key: jax.Array | None = None,
         subset_frac: float = 1.0,
+        pad_n_bases: int = 0
     ):
         assert split in ["train", "val", "test"], f"split must be one of train, val, test"
         assert cell_type in ["HepG2", "K562", "WTC11"], f"cell_type must be one of HepG2, K562, WTC11"
@@ -61,6 +62,10 @@ class LentiMPRADataset:
         
         assert subset_frac >= 0 and subset_frac <= 1, "subset_frac must be between 0 and 1"
         self.subset_frac = subset_frac
+        
+        assert pad_n_bases >= 0, "pad_n_bases must be greater than or equal to 0"
+        self.pad_n_bases = pad_n_bases
+        
         # Initialize PRNG key for JAX random number generation
         if rng_key is None:
             self.rng_key = jax.random.PRNGKey(42)
@@ -146,6 +151,10 @@ class LentiMPRADataset:
     def __getitem__(self, idx):
         # Get the sequence and label for the given index
         sequence = self.data.iloc[idx]['seq'] + self.promoter_seq + self.rand_barcode
+        if self.pad_n_bases > 0:
+            #pad both sides with n evenly
+            padding_amount = self.pad_n_bases // 2
+            sequence = 'N' * padding_amount + sequence + 'N' * padding_amount
         label = self.data.iloc[idx]['mean_value']
         
         # Convert sequence to one-hot encoding

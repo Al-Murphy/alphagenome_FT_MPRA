@@ -69,6 +69,7 @@ import jax
 import jax.numpy as jnp
 import haiku as hk
 from alphagenome_ft import CustomHead
+from alphagenome_research.model import layers
 
 
 class MPRAHead(CustomHead):
@@ -77,7 +78,14 @@ class MPRAHead(CustomHead):
     Can use:
     - 1bp embeddings (encoder + transformer via decoder)
     - 128bp embeddings (pure transformer output)
-    - Both combined for richer representations
+    
+    Configuration:
+    - center_bp: Center region to average over, in BASE PAIRS (default: 128bp)
+                 Converted to appropriate resolution based on embedding_mode.
+                 For 1bp mode: uses center_bp directly
+                 For 128bp mode: center_bp/128 positions
+    - pooling_type: How to pool over center region ('mean', 'sum', or 'max')
+    - embedding_mode: Which embeddings to use ('1bp' or '128bp')
     """
     
     def __init__(
@@ -96,10 +104,14 @@ class MPRAHead(CustomHead):
             num_organisms=num_organisms,
             metadata=metadata,
         )
-        # Get center_window_size from metadata (default: 128 bp)
-        self._center_window_size = (
-            metadata.get('center_window_size', 128) if metadata else 128
+        
+        # Get center region in base pairs (default: 256bp)
+        # Note: 'center_bp' is preferred, but 'center_window_size' is kept for backward compatibility
+        self._center_bp = (
+            metadata.get('center_bp', metadata.get('center_window_size', 256)) 
+            if metadata else 128
         )
+        
         # Get pooling_type from metadata (default: 'sum')
         pooling_type = (
             metadata.get('pooling_type', 'sum') if metadata else 'sum'
@@ -107,13 +119,13 @@ class MPRAHead(CustomHead):
         assert pooling_type in ['sum', 'mean', 'max'], f'Invalid pooling type: {pooling_type}'
         self._pooling_type = pooling_type
         
-        # NEW: Choose which embeddings to use
-        # Options: '1bp', '128bp', 'both'
+        # Choose which embeddings to use: '1bp' or '128bp'
         self._embedding_mode = metadata.get('embedding_mode', '1bp') if metadata else '1bp'
         assert self._embedding_mode in ['1bp', '128bp'], (
             f'Invalid embedding_mode: {self._embedding_mode}. '
             'Must be one of: "1bp", "128bp"'
         )
+        
     
     def predict(self, embeddings, organism_index, **kwargs):
         """Predict MPRA activity from embeddings.
@@ -156,6 +168,9 @@ class MPRAHead(CustomHead):
         
         Args:
             predictions: Per-position predictions with shape (batch, sequence_length, num_tracks)
+                        where sequence_length depends on embedding_mode:
+                        - 1bp mode: sequence_length in base pairs
+                        - 128bp mode: sequence_length in 128bp bins
             batch: Batch data containing 'targets' with shape (batch,) or (batch, num_tracks)
         
         Returns:
@@ -168,13 +183,24 @@ class MPRAHead(CustomHead):
         # predictions shape: (batch, sequence_length, num_tracks)
         # Pool over center region to get scalar predictions for loss computation
         seq_len = predictions.shape[1]
-        center_start = (seq_len - self._center_window_size) // 2
+        
+        # Convert center_bp to positions based on embedding resolution
+        if self._embedding_mode == '1bp':
+            # For 1bp mode, center_bp is already in the right units
+            window_size = self._center_bp
+        else:  # '128bp'
+            # For 128bp mode, convert bp to positions (each position = 128bp)
+            window_size = max(1, int(self._center_bp / 128))
+        
+        # For short sequences, use entire sequence
+        window_size = jnp.minimum(window_size, seq_len)
+        center_start = (seq_len - window_size) // 2
         center_start = jnp.maximum(center_start, 0)
         
         center_predictions = jax.lax.dynamic_slice_in_dim(
             predictions,
             start_index=center_start,
-            slice_size=self._center_window_size,
+            slice_size=window_size,
             axis=1
         )
         
@@ -191,9 +217,16 @@ class MPRAHead(CustomHead):
         
         mse_loss = jnp.mean((pred_values - targets) ** 2)
         
+        # Calculate pearson correlation coefficient
+        # Flatten to 1D for correlation calculation
+        pred_flat = pred_values.flatten()
+        targets_flat = targets.flatten()
+        pearson_corr = jnp.corrcoef(pred_flat, targets_flat)[0, 1]
+        
         return {
             'loss': mse_loss,
             'mse': mse_loss,
+            'pearson_corr': pearson_corr,
         }
         
         
@@ -213,7 +246,16 @@ class EncoderMPRAHead(CustomHead):
     Requirements:
     - ExtendedEmbeddings with encoder_output field
     - Custom forward pass that captures encoder output
+    
+    Configuration:
+    - center_bp: Center region to average over, in BASE PAIRS (default: 256bp)
+                 This is automatically converted to encoder positions (128bp resolution).
+                 Example: center_bp=384 → 384/128 = 3 encoder positions
+    - pooling_type: How to pool over center region ('mean', 'sum', or 'max')
     """
+    
+    # Encoder resolution in base pairs per position
+    ENCODER_RESOLUTION_BP = 128
     
     def __init__(
         self, 
@@ -231,9 +273,13 @@ class EncoderMPRAHead(CustomHead):
             num_organisms=num_organisms,
             metadata=metadata,
         )
-        self._center_window_size = (
-            metadata.get('center_window_size', 128) if metadata else 128
-        )
+        
+        # Get center region in base pairs (default 256bp = 2 encoder positions)
+        center_bp = metadata.get('center_bp', 256) if metadata else 256
+        
+        # Convert base pairs to encoder positions (128bp resolution)
+        self._center_window_positions = max(1, int(center_bp / self.ENCODER_RESOLUTION_BP))
+        
         pooling_type = (
             metadata.get('pooling_type', 'sum') if metadata else 'sum'
         )
@@ -266,12 +312,11 @@ class EncoderMPRAHead(CustomHead):
         
         # Use raw encoder output (BEFORE transformer)
         x = embeddings.encoder_output  # (batch, seq_len//128, D)
-        
         # Prediction layers operating at 128bp resolution
-        x = hk.Linear(256, name='hidden')(x)
+        x = layers.LayerNorm(name='norm')(x)
+        x = hk.Linear(512, name='hidden')(x)
         x = jax.nn.relu(x)
         per_position_predictions = hk.Linear(self._num_tracks, name='output')(x)
-        
         # Return per-position predictions at 128bp resolution (rank 3)
         # Shape: (batch, seq_len//128, num_tracks)
         return per_position_predictions
@@ -290,16 +335,21 @@ class EncoderMPRAHead(CustomHead):
         if targets is None:
             return {'loss': jnp.array(0.0)}
         
-        # predictions shape: (batch, sequence_length, num_tracks)
+        # predictions shape: (batch, sequence_length_in_encoder_positions, num_tracks)
         # Pool over center region to get scalar predictions for loss computation
-        seq_len = predictions.shape[1]
-        center_start = (seq_len - self._center_window_size) // 2
+        # Note: sequence_length is in encoder positions (128bp resolution)
+        seq_len = predictions.shape[1]  # Length in encoder positions
+        
+        # For short sequences, use the entire sequence instead of center window
+        # window_size is in encoder positions (each position = 128bp)
+        window_size = jnp.minimum(self._center_window_positions, seq_len)
+        center_start = (seq_len - window_size) // 2
         center_start = jnp.maximum(center_start, 0)
         
         center_predictions = jax.lax.dynamic_slice_in_dim(
             predictions,
             start_index=center_start,
-            slice_size=self._center_window_size,
+            slice_size=window_size,
             axis=1
         )
         
@@ -310,9 +360,19 @@ class EncoderMPRAHead(CustomHead):
             pred_values = jnp.max(center_predictions, axis=1)  # (batch, num_tracks)
         elif self._pooling_type == 'sum':
             pred_values = jnp.sum(center_predictions, axis=1)  # (batch, num_tracks)
-        
         if targets.ndim == 1:
             targets = targets[:, None]
         
         mse_loss = jnp.mean((pred_values - targets) ** 2)
-        return {'loss': mse_loss, 'mse': mse_loss}        
+        
+        # Calculate pearson correlation coefficient
+        # Flatten to 1D for correlation calculation
+        pred_flat = pred_values.flatten()
+        targets_flat = targets.flatten()
+        pearson_corr = jnp.corrcoef(pred_flat, targets_flat)[0, 1]
+        
+        return {
+            'loss': mse_loss,
+            'mse': mse_loss,
+            'pearson_corr': pearson_corr,
+        }        

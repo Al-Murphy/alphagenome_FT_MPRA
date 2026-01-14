@@ -212,3 +212,5 @@ data/*
 *.code-workspace
 wandb/*
 wandb
+results/
+results/*
