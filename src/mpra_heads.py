@@ -314,7 +314,7 @@ class EncoderMPRAHead(CustomHead):
         x = embeddings.encoder_output  # (batch, seq_len//128, D)
         # Prediction layers operating at 128bp resolution
         x = layers.LayerNorm(name='norm')(x)
-        x = hk.Linear(512, name='hidden')(x)
+        x = hk.Linear(1024, name='hidden')(x)
         x = jax.nn.relu(x)
         per_position_predictions = hk.Linear(self._num_tracks, name='output')(x)
         # Return per-position predictions at 128bp resolution (rank 3)
