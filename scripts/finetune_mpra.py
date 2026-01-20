@@ -95,6 +95,12 @@ def main():
         help='Apply random shifts to training data (augmentation)'
     )
     parser.add_argument(
+        '--random_shift_likelihood',
+        type=float,
+        default=0.5,
+        help='Likelihood of applying random shifts to training data'
+    )
+    parser.add_argument(
         '--reverse_complement',
         action='store_true',
         default=True,
@@ -120,6 +126,18 @@ def main():
         action='store_true',
         help='Do not freeze backbone (train full model, not just head)'
     )
+    parser.add_argument(
+        '--nl_size',
+        type=int,
+        default=1024,
+        help='Number of hidden units for the MLP'
+    )
+    parser.add_argument(
+        '--do',
+        type=float,
+        default=None,
+        help='Dropout rate for the MLP - None means no dropout'
+    )
     
     # Training parameters
     parser.add_argument(
@@ -139,6 +157,12 @@ def main():
         type=int,
         default=1,
         help='Number of gradient accumulation steps (reduces memory usage)'
+    )
+    parser.add_argument(
+        '--gradient_clip',
+        type=float,
+        default=None,
+        help='Gradient clipping value. If set, gradients are clipped to this maximum norm (e.g., 1.0 or 5.0). Default: None (no clipping)'
     )
     
     # Checkpointing and early stopping
@@ -223,6 +247,7 @@ def main():
     print(f"Pooling type:               {args.pooling_type}")
     print(f"Freeze backbone:            {not args.no_freeze_backbone}")
     print(f"Gradient accumulation:      {args.gradient_accumulation_steps}")
+    print(f"Gradient clipping:          {args.gradient_clip if args.gradient_clip else 'None'}")
     print(f"Early stopping patience:    {args.early_stopping_patience}")
     print(f"Val eval frequency:         {args.val_eval_frequency} per epoch")
     print(f"Test eval frequency:        {args.test_eval_frequency} per epoch")
@@ -257,7 +282,9 @@ def main():
             num_tracks=1,
             metadata={
                 'center_bp': args.center_bp,
-                'pooling_type': args.pooling_type
+                'pooling_type': args.pooling_type,
+                'nl_size': args.nl_size,
+                'do': args.do
             }
         )
     )
@@ -287,6 +314,7 @@ def main():
         cell_type=args.cell_type,
         split='train',
         random_shift=args.random_shift,
+        random_shift_likelihood=args.random_shift_likelihood,
         reverse_complement=args.reverse_complement
     )
     val_dataset = LentiMPRADataset(
@@ -344,6 +372,7 @@ def main():
         save_full_model=args.save_full_model,
         early_stopping_patience=args.early_stopping_patience,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
+        gradient_clip=args.gradient_clip,
         val_eval_frequency=args.val_eval_frequency,
         test_eval_frequency=args.test_eval_frequency,
         second_stage_lr=args.second_stage_lr,

@@ -54,7 +54,7 @@ from alphagenome_ft import (
     HeadConfig,
     HeadType,
     register_custom_head,
-    load_checkpoint,
+    create_model_with_custom_heads,
 )
 from src import EncoderMPRAHead, LentiMPRADataset, MPRADataLoader
 
@@ -77,6 +77,19 @@ def get_predictions(
     all_predictions = []
     all_actuals = []
     
+    # Infer pooling settings from the head config to match training
+    head_config = getattr(model, "_head_configs", {}).get(head_name, None)
+    if head_config is not None:
+        metadata = getattr(head_config, "metadata", {}) or {}
+        center_bp = metadata.get("center_bp", 256)
+        pooling_type = metadata.get("pooling_type", "sum")
+    else:
+        # Fallback to defaults used in training script
+        center_bp = 256
+        pooling_type = "sum"
+    # Convert center_bp (in bp) to encoder positions (128bp resolution)
+    center_window_positions = max(1, center_bp // 128)
+    
     print(f"Running inference on {len(dataloader)} batches...")
     
     for i, batch in enumerate(dataloader):
@@ -95,10 +108,29 @@ def get_predictions(
             )
         
         # Get predictions for our head
-        head_predictions = predictions[head_name]
+        head_predictions = predictions[head_name]  # (B, L_enc, num_tracks)
         
-        # Convert to numpy and collect
-        all_predictions.append(np.array(head_predictions))
+        # Convert to numpy for pooling
+        head_np = np.array(head_predictions)
+        # Pool over center window to match training loss logic in EncoderMPRAHead
+        seq_len = head_np.shape[1]
+        window_size = min(center_window_positions, seq_len)
+        center_start = max((seq_len - window_size) // 2, 0)
+        center_end = center_start + window_size
+        center_preds = head_np[:, center_start:center_end, :]  # (B, W, num_tracks)
+        
+        if pooling_type == "mean":
+            pooled = center_preds.mean(axis=1)  # (B, num_tracks)
+        elif pooling_type == "max":
+            pooled = center_preds.max(axis=1)
+        else:  # "sum" or fallback
+            pooled = center_preds.sum(axis=1)
+        
+        # Collapse num_tracks if it's 1
+        if pooled.shape[-1] == 1:
+            pooled = pooled[:, 0]
+        
+        all_predictions.append(pooled)
         all_actuals.append(np.array(batch['y']))
         
         # Progress indicator
@@ -172,10 +204,13 @@ def main():
     
     args = parser.parse_args()
     
+    # Resolve checkpoint directory to an absolute path for Orbax / Orbax
+    checkpoint_dir = Path(args.checkpoint_dir).resolve()
+    
     print("=" * 80)
     print("Testing Fine-tuned AlphaGenome MPRA Model")
     print("=" * 80)
-    print(f"Checkpoint: {args.checkpoint_dir}")
+    print(f"Checkpoint: {checkpoint_dir}")
     print(f"Cell type: {args.cell_type}")
     print(f"Batch size: {args.batch_size}")
     print()
@@ -197,12 +232,26 @@ def main():
         )
     )
     
-    # Load checkpoint
-    print(f"\nLoading checkpoint from {args.checkpoint_dir}...")
-    model = load_checkpoint(
-        args.checkpoint_dir,
-        base_model_version='all_folds',
+    # Create MPRA model that uses encoder output only (no transformer/decoder),
+    # matching how the model was trained for short MPRA sequences.
+    print("\nCreating MPRA model with encoder output...")
+    model = create_model_with_custom_heads(
+        'all_folds',
+        custom_heads=['mpra_head'],
+        use_encoder_output=True,
     )
+    
+    # Load checkpoint parameters directly with Orbax into this model
+    import orbax.checkpoint as ocp
+    checkpoint_path = checkpoint_dir / 'checkpoint'
+    if not checkpoint_path.exists():
+        raise FileNotFoundError(f"Checkpoint not found at {checkpoint_path}")
+    
+    print(f"\nLoading checkpoint from {checkpoint_path}...")
+    checkpointer = ocp.StandardCheckpointer()
+    loaded_params, loaded_state = checkpointer.restore(checkpoint_path)
+    model._params = loaded_params
+    model._state = loaded_state
     print("✓ Model loaded successfully")
     
     # Create test dataset

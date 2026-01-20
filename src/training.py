@@ -632,6 +632,7 @@ def train(
     test_eval_frequency: int = 1,
     second_stage_lr: float | None = None,
     resume_from_stage2: bool = False,
+    gradient_clip: float | None = None,
 ) -> dict:
     """Complete training loop with checkpointing and early stopping.
     
@@ -673,6 +674,8 @@ def train(
         resume_from_stage2: If True, skip Stage 1 training and resume directly from Stage 2.
             Requires checkpoint_dir to contain a Stage 1 checkpoint. second_stage_lr must be provided.
             Default is False.
+        gradient_clip: If provided, clips gradients by global norm to this value.
+            Helps stabilize training and prevent gradient explosion. Try 1.0 or 5.0. Default is None.
         
     Returns:
         Dictionary with training history (combined from both stages if second_stage_lr is provided)
@@ -726,10 +729,23 @@ def train(
             config=config,
         )
     
-    # Create optimizer and loss function
+    # Create optimizer with gradient clipping
     # If resuming from Stage 2, we'll create Stage 2 optimizer later
+    def create_optimizer(lr: float):
+        """Create optimizer with optional gradient clipping."""
+        optimizer = optax.adam(lr)
+        
+        # Add gradient clipping if specified
+        if gradient_clip is not None:
+            optimizer = optax.chain(
+                optax.clip_by_global_norm(gradient_clip),
+                optimizer
+            )
+        
+        return optimizer
+    
     if not resume_from_stage2:
-        optimizer = optax.adam(learning_rate)
+        optimizer = create_optimizer(learning_rate)
         optimizer_state = optimizer.init(model._params)
         opt_update = optimizer.update
     else:
@@ -923,9 +939,9 @@ def train(
         model.unfreeze_parameters(unfreeze_prefixes=['sequence_encoder'])
         print("✓ Encoder unfrozen")
         
-        # Create new optimizer for Stage 2 with different learning rate
+        # Create new optimizer for Stage 2 with different learning rate (same regularization)
         print(f"\nCreating optimizer for Stage 2 (LR={second_stage_lr})...")
-        optimizer_stage2 = optax.adam(second_stage_lr)
+        optimizer_stage2 = create_optimizer(second_stage_lr)
         optimizer_state = optimizer_stage2.init(model._params)
         opt_update = optimizer_stage2.update
         print("✓ Optimizer created")

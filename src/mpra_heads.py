@@ -276,7 +276,10 @@ class EncoderMPRAHead(CustomHead):
         
         # Get center region in base pairs (default 256bp = 2 encoder positions)
         center_bp = metadata.get('center_bp', 256) if metadata else 256
-        
+        nl_size = metadata.get('nl_size', 1024) if metadata else 1024
+        self._nl_size = nl_size
+        do = metadata.get('do', None) if metadata else None
+        self._do = do
         # Convert base pairs to encoder positions (128bp resolution)
         self._center_window_positions = max(1, int(center_bp / self.ENCODER_RESOLUTION_BP))
         
@@ -314,7 +317,18 @@ class EncoderMPRAHead(CustomHead):
         x = embeddings.encoder_output  # (batch, seq_len//128, D)
         # Prediction layers operating at 128bp resolution
         x = layers.LayerNorm(name='norm')(x)
-        x = hk.Linear(1024, name='hidden')(x)
+        x = hk.Linear(self._nl_size, name='hidden')(x)
+        # Apply dropout only during training (when RNG is available)
+        # During validation/evaluation, RNG is None, so hk.next_rng_key() will fail
+        # In that case, we skip dropout (which is correct for evaluation)
+        if self._do is not None:
+            try:
+                rng_key = hk.next_rng_key()
+                x = hk.dropout(rng_key, self._do, x)
+            except (RuntimeError, ValueError, AttributeError):
+                # RNG not available (evaluation mode) - skip dropout
+                # This is expected during validation/testing when rng=None is passed to apply()
+                pass
         x = jax.nn.relu(x)
         per_position_predictions = hk.Linear(self._num_tracks, name='output')(x)
         # Return per-position predictions at 128bp resolution (rank 3)
