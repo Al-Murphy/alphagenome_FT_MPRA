@@ -186,7 +186,7 @@ def validate(
     loss_fn: Any,
     head_name: str = 'mpra_head',
 ) -> dict:
-    """Validate model on validation set.
+    """Validate model on validation set. Note these are batch-averaged metrics.
     
     Args:
         model: CustomAlphaGenomeModel instance
@@ -246,7 +246,7 @@ def test(
     loss_fn: Any,
     head_name: str = 'mpra_head',
 ) -> dict:
-    """Test model on test set.
+    """Test model on test set. Note these are batch-averaged metrics.
     
     Args:
         model: CustomAlphaGenomeModel instance
