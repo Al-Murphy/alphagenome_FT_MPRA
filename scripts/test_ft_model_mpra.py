@@ -41,6 +41,7 @@ USAGE EXAMPLES:
 """
 
 import argparse
+import json
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -204,7 +205,7 @@ def main():
     
     args = parser.parse_args()
     
-    # Resolve checkpoint directory to an absolute path for Orbax / Orbax
+    # Resolve checkpoint directory to an absolute path for Orbax
     checkpoint_dir = Path(args.checkpoint_dir).resolve()
     
     print("=" * 80)
@@ -215,7 +216,27 @@ def main():
     print(f"Batch size: {args.batch_size}")
     print()
     
-    # Register custom MPRA head
+    # Try to load head configuration from checkpoint (if available) so that
+    # the test-time head definition exactly matches the training-time one.
+    head_metadata = {
+        'center_bp': 256,
+        'pooling_type': 'sum',
+    }
+    config_path = checkpoint_dir / 'config.json'
+    if config_path.exists():
+        try:
+            with open(config_path, 'r') as f:
+                cfg = json.load(f)
+            head_cfg = (cfg.get('head_configs', {})
+                           .get('mpra_head', {})
+                           .get('metadata', {}))
+            # Merge, giving precedence to values from the checkpoint config.
+            head_metadata.update(head_cfg)
+        except Exception:
+            # Fall back to defaults if anything goes wrong reading config.
+            pass
+
+    # Register custom MPRA head using (possibly) checkpoint-derived metadata.
     print("Registering custom MPRA head...")
     register_custom_head(
         'mpra_head',
@@ -225,11 +246,8 @@ def main():
             name='mpra_head',
             output_type=dna_output.OutputType.RNA_SEQ,
             num_tracks=1,
-            metadata={
-                'center_bp': 256,
-                'pooling_type': 'sum'
-            }
-        )
+            metadata=head_metadata,
+        ),
     )
     
     # Create MPRA model that uses encoder output only (no transformer/decoder),
@@ -250,8 +268,72 @@ def main():
     print(f"\nLoading checkpoint from {checkpoint_path}...")
     checkpointer = ocp.StandardCheckpointer()
     loaded_params, loaded_state = checkpointer.restore(checkpoint_path)
-    model._params = loaded_params
-    model._state = loaded_state
+
+    # Determine whether this is a full-model checkpoint or heads-only checkpoint.
+    # This mirrors the logic in alphagenome_ft.custom_model.load_checkpoint().
+    config_path = checkpoint_dir / 'config.json'
+    save_full_model = True  # default to full model if no config is found (backwards compatibility)
+    if config_path.exists():
+        with open(config_path, 'r') as f:
+            cfg = json.load(f)
+        save_full_model = cfg.get('save_full_model', False)
+
+    if save_full_model:
+        # Full model checkpoint: replace entire parameter/state trees
+        model._params = loaded_params
+        model._state = loaded_state
+    else:
+        # Heads-only checkpoint: merge loaded head params into the existing model
+        # while keeping the pretrained backbone parameters from the base model.
+        def merge_head_params(model_params, loaded_head_params):
+            """Merge loaded head parameters into model parameters.
+
+            This is adapted from alphagenome_ft.custom_model.load_checkpoint and
+            alphagenome_FT_MPRA.src.training._train_stage to support both flat
+            and nested Haiku parameter tree structures.
+            """
+            import copy
+            merged = copy.deepcopy(model_params)
+
+            # Structure 1: Flat keys like 'head/{head_name}/...' (use_encoder_output=True mode)
+            if isinstance(loaded_head_params, dict):
+                head_keys = {
+                    k: v
+                    for k, v in loaded_head_params.items()
+                    if isinstance(k, str) and k.startswith('head/')
+                }
+                if head_keys:
+                    for key, value in head_keys.items():
+                        merged[key] = value
+
+            # Structure 2: 'alphagenome/head' (encoder-only mode, nested)
+            if isinstance(loaded_head_params, dict) and 'alphagenome/head' in loaded_head_params:
+                if 'alphagenome/head' not in merged:
+                    merged['alphagenome/head'] = {}
+                for head_name, head_params in loaded_head_params['alphagenome/head'].items():
+                    merged['alphagenome/head'][head_name] = head_params
+
+            # Structure 3: 'alphagenome' -> 'head' (standard mode, nested)
+            if isinstance(loaded_head_params, dict) and 'alphagenome' in loaded_head_params:
+                if isinstance(loaded_head_params['alphagenome'], dict):
+                    if 'head' in loaded_head_params['alphagenome']:
+                        if 'alphagenome' not in merged or not isinstance(merged.get('alphagenome'), dict):
+                            merged['alphagenome'] = {}
+                        if 'head' not in merged['alphagenome']:
+                            merged['alphagenome']['head'] = {}
+                        for head_name, head_params in loaded_head_params['alphagenome']['head'].items():
+                            merged['alphagenome']['head'][head_name] = head_params
+
+            return merged
+
+        model._params = merge_head_params(model._params, loaded_params)
+        model._state = merge_head_params(model._state, loaded_state)
+
+        # Ensure parameters and state are on the correct device
+        device = model._device_context._device
+        model._params = jax.device_put(model._params, device)
+        model._state = jax.device_put(model._state, device)
+
     print("✓ Model loaded successfully")
     
     # Create test dataset
@@ -327,4 +409,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
