@@ -23,6 +23,86 @@ except ImportError:
 from .data import MPRADataLoader
 
 
+# Cache for JIT-compiled head-only forward functions
+_head_only_forward_cache = {}
+
+def _get_or_create_head_only_forward(model: Any, head_name: str):
+    """Get or create a JIT-compiled head-only forward function.
+    
+    This function is cached and reused across calls for performance.
+    """
+    cache_key = (id(model), head_name)
+    
+    if cache_key in _head_only_forward_cache:
+        return _head_only_forward_cache[cache_key]
+    
+    # Create the head-only forward function once
+    from alphagenome_ft.embeddings_extended import ExtendedEmbeddings
+    import haiku as hk
+    from alphagenome_ft import custom_heads as custom_heads_module
+    
+    head_config = model._head_configs[head_name]
+    num_organisms = len(model._metadata)
+    
+    @hk.transform_with_state
+    def head_forward(encoder_output, organism_index):
+        """Head-only forward pass using cached encoder output."""
+        embeddings = ExtendedEmbeddings(
+            embeddings_1bp=None,
+            embeddings_128bp=None,
+            encoder_output=encoder_output,
+        )
+        with hk.name_scope('head'):
+            head = custom_heads_module.create_custom_head(
+                head_name,
+                metadata=head_config.metadata,
+                num_organisms=num_organisms
+            )
+            return head.predict(embeddings, organism_index)
+    
+    # JIT compile the apply function for performance
+    @jax.jit
+    def jitted_head_forward(params, state, encoder_output, organism_index):
+        predictions, _ = head_forward.apply(
+            params,
+            state,
+            None,  # rng
+            encoder_output,
+            organism_index
+        )
+        return predictions
+    
+    _head_only_forward_cache[cache_key] = jitted_head_forward
+    return jitted_head_forward
+
+def _predict_with_cached_embeddings(
+    model: Any,
+    params: Any,
+    state: Any,
+    encoder_output: jnp.ndarray,
+    organism_index: jnp.ndarray,
+    head_name: str,
+):
+    """Forward pass using cached encoder embeddings.
+    
+    This bypasses the encoder and uses pre-computed embeddings directly.
+    Only runs the head forward pass. Uses JIT-compiled function for performance.
+    """
+    # Get or create JIT-compiled head-only forward function
+    head_forward_fn = _get_or_create_head_only_forward(model, head_name)
+    
+    # Apply JIT-compiled forward pass
+    with model._device_context:
+        predictions = head_forward_fn(
+            params,
+            state,
+            encoder_output,
+            organism_index
+        )
+    
+    return {head_name: predictions}
+
+
 def train_epoch(
     model: Any,
     dataloader: MPRADataLoader,
@@ -32,6 +112,7 @@ def train_epoch(
     loss_fn: Any,
     head_name: str = 'mpra_head',
     gradient_accumulation_steps: int = 1,
+    use_cached_embeddings: bool = False,
 ) -> tuple[dict, Any, jax.Array]:
     """Train for one epoch with optional gradient accumulation.
     
@@ -61,47 +142,88 @@ def train_epoch(
     for batch in dataloader:
         rng_key, subkey = jax.random.split(rng_key)
         
-        # Split batch into mini-batches for gradient accumulation
-        batch_size = batch['seq'].shape[0]
-        mini_batch_size = max(1, batch_size // gradient_accumulation_steps)
-        
-        for mini_batch_start in range(0, batch_size, mini_batch_size):
-            mini_batch_end = min(mini_batch_start + mini_batch_size, batch_size)
+        # Check if using cached embeddings
+        if use_cached_embeddings and 'encoder_output' in batch:
+            # Use cached embeddings mode
+            batch_size = batch['encoder_output'].shape[0]
+            mini_batch_size = max(1, batch_size // gradient_accumulation_steps)
             
-            # Extract mini-batch
-            mini_batch = {
-                'seq': batch['seq'][mini_batch_start:mini_batch_end],
-                'y': batch['y'][mini_batch_start:mini_batch_end],
-                'organism_index': batch['organism_index'][mini_batch_start:mini_batch_end],
-            }
+            for mini_batch_start in range(0, batch_size, mini_batch_size):
+                mini_batch_end = min(mini_batch_start + mini_batch_size, batch_size)
+                
+                # Extract mini-batch
+                mini_batch = {
+                    'encoder_output': batch['encoder_output'][mini_batch_start:mini_batch_end],
+                    'y': batch['y'][mini_batch_start:mini_batch_end],
+                    'organism_index': batch['organism_index'][mini_batch_start:mini_batch_end],
+                }
+                
+                # Compute loss and gradients for mini-batch
+                def loss_fn_inner(params):
+                    # Get predictions using cached embeddings
+                    with model._device_context:
+                        predictions = _predict_with_cached_embeddings(
+                            model,
+                            params,
+                            model._state,
+                            mini_batch['encoder_output'],
+                            mini_batch['organism_index'],
+                            head_name,
+                        )
+                    
+                    # Get predictions for our head
+                    head_predictions = predictions[head_name]
+                    
+                    # Prepare batch for head's loss method (expects 'targets' key)
+                    loss_batch = {'targets': mini_batch['y']}
+                    
+                    # Use loss function to compute loss
+                    loss_dict = loss_fn(head_predictions, loss_batch)
+                    loss = loss_dict['loss']
+                    
+                    return loss, loss_dict
+        else:
+            # Normal mode: use sequences
+            batch_size = batch['seq'].shape[0]
+            mini_batch_size = max(1, batch_size // gradient_accumulation_steps)
             
-            # Compute loss and gradients for mini-batch
-            def loss_fn_inner(params):
-                # Get predictions
-                with model._device_context:
-                    predictions = model._predict(
-                        params,
-                        model._state,
-                        mini_batch['seq'],
-                        mini_batch['organism_index'],
-                        negative_strand_mask=jnp.zeros(len(mini_batch['seq']), dtype=bool),
-                        strand_reindexing=jax.device_put(
-                            model._metadata[dna_model.Organism.HOMO_SAPIENS].strand_reindexing,
-                            model._device_context._device
-                        ),
-                    )
+            for mini_batch_start in range(0, batch_size, mini_batch_size):
+                mini_batch_end = min(mini_batch_start + mini_batch_size, batch_size)
                 
-                # Get predictions for our head
-                head_predictions = predictions[head_name]
+                # Extract mini-batch
+                mini_batch = {
+                    'seq': batch['seq'][mini_batch_start:mini_batch_end],
+                    'y': batch['y'][mini_batch_start:mini_batch_end],
+                    'organism_index': batch['organism_index'][mini_batch_start:mini_batch_end],
+                }
                 
-                # Prepare batch for head's loss method (expects 'targets' key)
-                loss_batch = {'targets': mini_batch['y']}
-                
-                # Use loss function to compute loss
-                loss_dict = loss_fn(head_predictions, loss_batch)
-                loss = loss_dict['loss']
-                
-                return loss, loss_dict
+                # Compute loss and gradients for mini-batch
+                def loss_fn_inner(params):
+                    # Get predictions
+                    with model._device_context:
+                        predictions = model._predict(
+                            params,
+                            model._state,
+                            mini_batch['seq'],
+                            mini_batch['organism_index'],
+                            negative_strand_mask=jnp.zeros(len(mini_batch['seq']), dtype=bool),
+                            strand_reindexing=jax.device_put(
+                                model._metadata[dna_model.Organism.HOMO_SAPIENS].strand_reindexing,
+                                model._device_context._device
+                            ),
+                        )
+                    
+                    # Get predictions for our head
+                    head_predictions = predictions[head_name]
+                    
+                    # Prepare batch for head's loss method (expects 'targets' key)
+                    loss_batch = {'targets': mini_batch['y']}
+                    
+                    # Use loss function to compute loss
+                    loss_dict = loss_fn(head_predictions, loss_batch)
+                    loss = loss_dict['loss']
+                    
+                    return loss, loss_dict
             
             # Compute gradients for mini-batch
             grad_fn = jax.value_and_grad(loss_fn_inner, has_aux=True)
@@ -185,6 +307,7 @@ def validate(
     dataloader: MPRADataLoader,
     loss_fn: Any,
     head_name: str = 'mpra_head',
+    use_cached_embeddings: bool = False,
 ) -> dict:
     """Validate model on validation set. Note these are batch-averaged metrics.
     
@@ -193,6 +316,7 @@ def validate(
         dataloader: DataLoader for validation batches
         loss_fn: Loss function created by model.create_loss_fn_for_head()
         head_name: Name of the custom head
+        use_cached_embeddings: If True, use cached encoder embeddings from batch
         
     Returns:
         Dictionary with validation metrics
@@ -205,17 +329,27 @@ def validate(
     for batch in dataloader:
         # Get predictions (no gradients)
         with model._device_context:
-            predictions = model._predict(
-                model._params,
-                model._state,
-                batch['seq'],
-                batch['organism_index'],
-                negative_strand_mask=jnp.zeros(len(batch['seq']), dtype=bool),
-                strand_reindexing=jax.device_put(
-                    model._metadata[dna_model.Organism.HOMO_SAPIENS].strand_reindexing,
-                    model._device_context._device
-                ),
-            )
+            if use_cached_embeddings and 'encoder_output' in batch:
+                predictions = _predict_with_cached_embeddings(
+                    model,
+                    model._params,
+                    model._state,
+                    batch['encoder_output'],
+                    batch['organism_index'],
+                    head_name,
+                )
+            else:
+                predictions = model._predict(
+                    model._params,
+                    model._state,
+                    batch['seq'],
+                    batch['organism_index'],
+                    negative_strand_mask=jnp.zeros(len(batch['seq']), dtype=bool),
+                    strand_reindexing=jax.device_put(
+                        model._metadata[dna_model.Organism.HOMO_SAPIENS].strand_reindexing,
+                        model._device_context._device
+                    ),
+                )
         
         # Get predictions for our head
         head_predictions = predictions[head_name]
@@ -245,6 +379,7 @@ def test(
     dataloader: MPRADataLoader,
     loss_fn: Any,
     head_name: str = 'mpra_head',
+    use_cached_embeddings: bool = False,
 ) -> dict:
     """Test model on test set. Note these are batch-averaged metrics.
     
@@ -253,6 +388,7 @@ def test(
         dataloader: DataLoader for test batches
         loss_fn: Loss function created by model.create_loss_fn_for_head()
         head_name: Name of the custom head
+        use_cached_embeddings: If True, use cached encoder embeddings from batch
         
     Returns:
         Dictionary with test metrics
@@ -265,17 +401,27 @@ def test(
     for batch in dataloader:
         # Get predictions (no gradients)
         with model._device_context:
-            predictions = model._predict(
-                model._params,
-                model._state,
-                batch['seq'],
-                batch['organism_index'],
-                negative_strand_mask=jnp.zeros(len(batch['seq']), dtype=bool),
-                strand_reindexing=jax.device_put(
-                    model._metadata[dna_model.Organism.HOMO_SAPIENS].strand_reindexing,
-                    model._device_context._device
-                ),
-            )
+            if use_cached_embeddings and 'encoder_output' in batch:
+                predictions = _predict_with_cached_embeddings(
+                    model,
+                    model._params,
+                    model._state,
+                    batch['encoder_output'],
+                    batch['organism_index'],
+                    head_name,
+                )
+            else:
+                predictions = model._predict(
+                    model._params,
+                    model._state,
+                    batch['seq'],
+                    batch['organism_index'],
+                    negative_strand_mask=jnp.zeros(len(batch['seq']), dtype=bool),
+                    strand_reindexing=jax.device_put(
+                        model._metadata[dna_model.Organism.HOMO_SAPIENS].strand_reindexing,
+                        model._device_context._device
+                    ),
+                )
         
         # Get predictions for our head
         head_predictions = predictions[head_name]
@@ -321,6 +467,7 @@ def _train_stage(
     test_eval_frequency: int,
     stage_name: str = "Stage 1",
     start_epoch: int = 0,
+    use_cached_embeddings: bool = False,
 ) -> tuple[dict, Any, jax.Array, int, float]:
     """Train a single stage of training.
     
@@ -401,7 +548,10 @@ def _train_stage(
             rng_key, subkey = jax.random.split(rng_key)
             
             # Process batch with gradient accumulation
-            batch_size = batch['seq'].shape[0]
+            if use_cached_embeddings and 'encoder_output' in batch:
+                batch_size = batch['encoder_output'].shape[0]
+            else:
+                batch_size = batch['seq'].shape[0]
             mini_batch_size = max(1, batch_size // gradient_accumulation_steps)
             
             accumulated_grads = None
@@ -411,26 +561,47 @@ def _train_stage(
             
             for mini_batch_start in range(0, batch_size, mini_batch_size):
                 mini_batch_end = min(mini_batch_start + mini_batch_size, batch_size)
-                mini_batch = {
-                    'seq': batch['seq'][mini_batch_start:mini_batch_end],
-                    'y': batch['y'][mini_batch_start:mini_batch_end],
-                    'organism_index': batch['organism_index'][mini_batch_start:mini_batch_end],
-                }
                 
-                def loss_fn_inner(params):
-                    with model._device_context:
-                        predictions = model._predict(
-                            params, model._state, mini_batch['seq'], mini_batch['organism_index'],
-                            negative_strand_mask=jnp.zeros(len(mini_batch['seq']), dtype=bool),
-                            strand_reindexing=jax.device_put(
-                                model._metadata[dna_model.Organism.HOMO_SAPIENS].strand_reindexing,
-                                model._device_context._device
-                            ),
-                        )
-                    head_predictions = predictions[head_name]
-                    loss_batch = {'targets': mini_batch['y']}
-                    loss_dict = loss_fn(head_predictions, loss_batch)
-                    return loss_dict['loss'], loss_dict
+                if use_cached_embeddings and 'encoder_output' in batch:
+                    mini_batch = {
+                        'encoder_output': batch['encoder_output'][mini_batch_start:mini_batch_end],
+                        'y': batch['y'][mini_batch_start:mini_batch_end],
+                        'organism_index': batch['organism_index'][mini_batch_start:mini_batch_end],
+                    }
+                    
+                    def loss_fn_inner(params):
+                        with model._device_context:
+                            predictions = _predict_with_cached_embeddings(
+                                model, params, model._state,
+                                mini_batch['encoder_output'],
+                                mini_batch['organism_index'],
+                                head_name,
+                            )
+                        head_predictions = predictions[head_name]
+                        loss_batch = {'targets': mini_batch['y']}
+                        loss_dict = loss_fn(head_predictions, loss_batch)
+                        return loss_dict['loss'], loss_dict
+                else:
+                    mini_batch = {
+                        'seq': batch['seq'][mini_batch_start:mini_batch_end],
+                        'y': batch['y'][mini_batch_start:mini_batch_end],
+                        'organism_index': batch['organism_index'][mini_batch_start:mini_batch_end],
+                    }
+                    
+                    def loss_fn_inner(params):
+                        with model._device_context:
+                            predictions = model._predict(
+                                params, model._state, mini_batch['seq'], mini_batch['organism_index'],
+                                negative_strand_mask=jnp.zeros(len(mini_batch['seq']), dtype=bool),
+                                strand_reindexing=jax.device_put(
+                                    model._metadata[dna_model.Organism.HOMO_SAPIENS].strand_reindexing,
+                                    model._device_context._device
+                                ),
+                            )
+                        head_predictions = predictions[head_name]
+                        loss_batch = {'targets': mini_batch['y']}
+                        loss_dict = loss_fn(head_predictions, loss_batch)
+                        return loss_dict['loss'], loss_dict
                 
                 grad_fn = jax.value_and_grad(loss_fn_inner, has_aux=True)
                 (loss, loss_dict), grads = grad_fn(model._params)
@@ -475,7 +646,7 @@ def _train_stage(
             
             # Evaluate validation at specified intervals
             if val_loader and batch_idx in val_eval_points:
-                val_metrics = validate(model, val_loader, loss_fn=loss_fn, head_name=head_name)
+                val_metrics = validate(model, val_loader, loss_fn=loss_fn, head_name=head_name, use_cached_embeddings=use_cached_embeddings)
                 epoch_val_losses.append(val_metrics['val_loss'])
                 epoch_val_pearsons.append(val_metrics['val_pearson'])
                 
@@ -497,7 +668,7 @@ def _train_stage(
             
             # Evaluate test at specified intervals
             if test_loader and batch_idx in test_eval_points:
-                test_metrics = test(model, test_loader, loss_fn=loss_fn, head_name=head_name)
+                test_metrics = test(model, test_loader, loss_fn=loss_fn, head_name=head_name, use_cached_embeddings=use_cached_embeddings)
                 epoch_test_losses.append(test_metrics['test_loss'])
                 epoch_test_pearsons.append(test_metrics['test_pearson'])
                 
@@ -633,6 +804,9 @@ def train(
     second_stage_lr: float | None = None,
     resume_from_stage2: bool = False,
     gradient_clip: float | None = None,
+    use_cached_embeddings: bool = False,
+    lr_scheduler: str | None = None,
+    save_test_results: str | None = None,
 ) -> dict:
     """Complete training loop with checkpointing and early stopping.
     
@@ -662,6 +836,9 @@ def train(
         save_full_model: If True, saves all parameters including backbone when checkpointing.
             If False (default), only saves custom head parameters (efficient for frozen backbone).
             Only used if checkpoint_dir is provided.
+            Note: When two-stage training is enabled (second_stage_lr provided), Stage 1 will
+            automatically save the full model regardless of this flag, as Stage 2 requires the
+            full model to unfreeze the encoder.
         early_stopping_patience: Number of epochs to wait for improvement before stopping.
             Only used if val_loader is provided. Default is 5. Applies to both stages.
         val_eval_frequency: Number of times to evaluate on validation set per epoch.
@@ -729,11 +906,25 @@ def train(
             config=config,
         )
     
+    # Get optimizer and regularization settings from config
+    # These can come from wandb_config or be passed directly
+    optimizer_type = 'adam'  # default
+    weight_decay = None
+    if wandb_config:
+        optimizer_type = wandb_config.get('optimizer', 'adam')
+        weight_decay = wandb_config.get('weight_decay', None)
+    
     # Create optimizer with gradient clipping
     # If resuming from Stage 2, we'll create Stage 2 optimizer later
     def create_optimizer(lr: float):
-        """Create optimizer with optional gradient clipping."""
-        optimizer = optax.adam(lr)
+        """Create optimizer with optional gradient clipping and weight decay."""
+        if optimizer_type.lower() == 'adamw':
+            if weight_decay is not None:
+                optimizer = optax.adamw(learning_rate=lr, weight_decay=weight_decay)
+            else:
+                optimizer = optax.adamw(learning_rate=lr)
+        else:  # adam
+            optimizer = optax.adam(lr)
         
         # Add gradient clipping if specified
         if gradient_clip is not None:
@@ -787,6 +978,12 @@ def train(
         checkpoint_path = Path(checkpoint_dir).resolve()  # Convert to absolute path
         stage1_checkpoint_dir = str(checkpoint_path / 'stage1')
     
+    # Determine save_full_model for Stage 1
+    # If two-stage training is enabled, Stage 1 must save full model for Stage 2 to load
+    stage1_save_full_model = save_full_model or enable_second_stage
+    if enable_second_stage and not save_full_model:
+        print(f"Note: Two-stage training enabled - Stage 1 will save full model (required for Stage 2)")
+    
     # ========================================================================
     # STAGE 1: Train with frozen backbone (skip if resuming from Stage 2)
     # ========================================================================
@@ -806,12 +1003,13 @@ def train(
             gradient_accumulation_steps=gradient_accumulation_steps,
             use_wandb=use_wandb,
             checkpoint_dir=stage1_checkpoint_dir,
-            save_full_model=save_full_model,
+            save_full_model=stage1_save_full_model,
             early_stopping_patience=early_stopping_patience,
             val_eval_frequency=val_eval_frequency,
             test_eval_frequency=test_eval_frequency,
             stage_name="Stage 1 (Frozen Backbone)",
             start_epoch=0,
+            use_cached_embeddings=use_cached_embeddings,
         )
         
         # Merge Stage 1 history
@@ -975,6 +1173,7 @@ def train(
             test_eval_frequency=test_eval_frequency,
             stage_name="Stage 2 (Unfrozen Encoder)",
             start_epoch=stage1_best_epoch,
+            use_cached_embeddings=False,  # Stage 2 trains encoder, so can't use cached embeddings
         )
         
         # Merge Stage 2 history
@@ -999,6 +1198,41 @@ def train(
         print(f"{'=' * 80}")
     else:
         print("\nTraining completed!")
+    
+    # Save test results to CSV if requested
+    if save_test_results and test_loader and history['test_loss']:
+        from pathlib import Path
+        import csv
+        
+        results_file = Path(save_test_results)
+        results_file.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Get best test metrics
+        best_test_loss = min(history['test_loss'])
+        best_test_epoch = history['test_loss'].index(best_test_loss) + 1
+        best_test_pearson = history['test_pearson'][best_test_epoch - 1] if best_test_epoch <= len(history['test_pearson']) else history['test_pearson'][-1]
+        final_test_loss = history['test_loss'][-1]
+        final_test_pearson = history['test_pearson'][-1]
+        
+        # Write results
+        file_exists = results_file.exists()
+        with open(results_file, 'a', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=[
+                'run_name', 'cell_type', 'best_test_loss', 'best_test_pearson', 
+                'best_test_epoch', 'final_test_loss', 'final_test_pearson'
+            ])
+            if not file_exists:
+                writer.writeheader()
+            writer.writerow({
+                'run_name': wandb_name if wandb_name else 'unnamed',
+                'cell_type': wandb_config.get('cell_type', 'unknown') if wandb_config else 'unknown',
+                'best_test_loss': f'{best_test_loss:.6f}',
+                'best_test_pearson': f'{best_test_pearson:.4f}',
+                'best_test_epoch': best_test_epoch,
+                'final_test_loss': f'{final_test_loss:.6f}',
+                'final_test_pearson': f'{final_test_pearson:.4f}',
+            })
+        print(f"\n✓ Test results saved to {results_file}")
     
     # Finish wandb run
     if use_wandb:

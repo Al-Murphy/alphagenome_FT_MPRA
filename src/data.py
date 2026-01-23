@@ -3,10 +3,13 @@ Data classes for AlphaGenome MPRA finetuning.
 """
 
 import os
+import pickle
+import hashlib
 import pandas as pd
 import jax
 import jax.numpy as jnp
 from typing import Any
+from pathlib import Path
 from alphagenome_research.model import dna_model
 
 
@@ -30,7 +33,9 @@ class LentiMPRADataset:
         reverse_complement_likelihood: float = 0.5,
         rng_key: jax.Array | None = None,
         subset_frac: float = 1.0,
-        pad_n_bases: int = 0
+        pad_n_bases: int = 0,
+        use_cached_embeddings: bool = False,
+        cache_file: str | None = None,
     ):
         assert split in ["train", "val", "test"], f"split must be one of train, val, test"
         assert cell_type in ["HepG2", "K562", "WTC11"], f"cell_type must be one of HepG2, K562, WTC11"
@@ -66,6 +71,25 @@ class LentiMPRADataset:
         assert pad_n_bases >= 0, "pad_n_bases must be greater than or equal to 0"
         self.pad_n_bases = pad_n_bases
         
+        # Cached embeddings support
+        self.use_cached_embeddings = use_cached_embeddings
+        self._embedding_cache = None
+        if use_cached_embeddings:
+            if cache_file is None:
+                raise ValueError("cache_file must be provided when use_cached_embeddings=True")
+            self._load_embedding_cache(cache_file)
+            # When using cached embeddings, disable augmentations
+            if random_shift or reverse_complement:
+                print("Warning: Augmentations disabled when using cached embeddings")
+                self.random_shift = False
+                self.reverse_complement = False
+            else:
+                self.random_shift = random_shift
+                self.reverse_complement = reverse_complement
+        else:
+            self.random_shift = random_shift
+            self.reverse_complement = reverse_complement
+        
         # Initialize PRNG key for JAX random number generation
         if rng_key is None:
             self.rng_key = jax.random.PRNGKey(42)
@@ -81,6 +105,30 @@ class LentiMPRADataset:
         if self.subset_frac < 1.0:
             self.data = self.data.sample(frac=self.subset_frac)
         print(f"Loaded {len(self.data)} samples for {split} split")
+    
+    def _compute_sequence_hash(self, sequence: str) -> str:
+        """Compute SHA256 hash of sequence for cache key."""
+        return hashlib.sha256(sequence.encode()).hexdigest()
+    
+    def _load_embedding_cache(self, cache_file: str):
+        """Load embedding cache from file and pre-convert to JAX arrays."""
+        cache_path = Path(cache_file)
+        if not cache_path.exists():
+            raise FileNotFoundError(f"Cache file not found: {cache_file}")
+        
+        print(f"Loading embedding cache from {cache_file}...")
+        with open(cache_path, 'rb') as f:
+            raw_cache = pickle.load(f)
+        
+        # Pre-convert all embeddings to JAX arrays for faster access
+        # This avoids repeated numpy->JAX conversion on every __getitem__ call
+        print("Converting embeddings to JAX arrays...")
+        self._embedding_cache = {}
+        for seq_hash, embedding in raw_cache.items():
+            # Convert to JAX array once, store for reuse
+            self._embedding_cache[seq_hash] = jnp.array(embedding)
+        
+        print(f"✓ Loaded {len(self._embedding_cache)} cached embeddings (pre-converted to JAX arrays)")
         
     def __len__(self):
         # Return total number of samples
@@ -157,24 +205,41 @@ class LentiMPRADataset:
             sequence = 'N' * padding_amount + sequence + 'N' * padding_amount
         label = self.data.iloc[idx]['mean_value']
         
-        # Convert sequence to one-hot encoding
-        sequence_onehot = self.model._one_hot_encoder.encode(sequence)
-        sequence_onehot = jnp.array(sequence_onehot)  # Convert to JAX array
-        
         organism_index = jnp.array([0]) if self.organism == dna_model.Organism.HOMO_SAPIENS else jnp.array([1])
         
-        if self.reverse_complement:
-            # Get random number to check if we should reverse complement
-            sequence_onehot, self.rng_key = self._reverse_complement_onehot(sequence_onehot)
-            # Don't need to touch y since it's a scalar
-        if self.random_shift:
-            sequence_onehot, self.rng_key = self._random_shift_onehot(sequence_onehot)
-        
-        return {
-            "seq": sequence_onehot,
-            "y": label,
-            "organism_index": organism_index
-        }
+        if self.use_cached_embeddings:
+            # Use cached encoder embeddings (already converted to JAX arrays)
+            seq_hash = self._compute_sequence_hash(sequence)
+            if seq_hash not in self._embedding_cache:
+                raise KeyError(
+                    f"Sequence hash {seq_hash} not found in cache. "
+                    "Make sure the cache was created with the same sequence preprocessing."
+                )
+            # Embedding is already a JAX array from cache loading
+            encoder_output = self._embedding_cache[seq_hash]
+            
+            return {
+                "encoder_output": encoder_output,  # Cached encoder embeddings (JAX array)
+                "y": label,
+                "organism_index": organism_index
+            }
+        else:
+            # Normal mode: return one-hot encoded sequence
+            sequence_onehot = self.model._one_hot_encoder.encode(sequence)
+            sequence_onehot = jnp.array(sequence_onehot)  # Convert to JAX array
+            
+            if self.reverse_complement:
+                # Get random number to check if we should reverse complement
+                sequence_onehot, self.rng_key = self._reverse_complement_onehot(sequence_onehot)
+                # Don't need to touch y since it's a scalar
+            if self.random_shift:
+                sequence_onehot, self.rng_key = self._random_shift_onehot(sequence_onehot)
+            
+            return {
+                "seq": sequence_onehot,
+                "y": label,
+                "organism_index": organism_index
+            }
 
 
 class MPRADataLoader:
@@ -239,32 +304,62 @@ class MPRADataLoader:
         Returns:
             Batched dictionary with stacked arrays
         """
-        # Stack sequences (handle variable length by padding or using max length)
-        seqs = [s["seq"] for s in samples]
-        max_len = max(s.shape[0] for s in seqs)
-        
-        # Pad sequences to same length
-        padded_seqs = []
-        for seq in seqs:
-            if seq.shape[0] < max_len:
-                padding = jnp.zeros((max_len - seq.shape[0], 4))
-                seq = jnp.concatenate([seq, padding], axis=0)
-            padded_seqs.append(seq)
-        
-        batch_seq = jnp.stack(padded_seqs, axis=0)  # (batch, seq_len, 4)
-        
-        # Stack labels
-        batch_y = jnp.array([s["y"] for s in samples])  # (batch,)
-        
-        # Stack organism indices
-        batch_org = jnp.stack([s["organism_index"] for s in samples], axis=0)  # (batch, 1)
-        batch_org = batch_org.squeeze(-1) if batch_org.shape[-1] == 1 else batch_org  # (batch,)
-        
-        return {
-            "seq": batch_seq,
-            "y": batch_y,
-            "organism_index": batch_org,
-        }
+        # Check if using cached embeddings
+        if "encoder_output" in samples[0]:
+            # Stack cached encoder embeddings
+            encoder_outputs = [s["encoder_output"] for s in samples]
+            # Handle variable length by padding or using max length
+            max_len = max(e.shape[0] for e in encoder_outputs)
+            max_feat = encoder_outputs[0].shape[1]  # Feature dimension
+            
+            padded_embeddings = []
+            for emb in encoder_outputs:
+                if emb.shape[0] < max_len:
+                    padding = jnp.zeros((max_len - emb.shape[0], max_feat))
+                    emb = jnp.concatenate([emb, padding], axis=0)
+                padded_embeddings.append(emb)
+            
+            batch_encoder_output = jnp.stack(padded_embeddings, axis=0)  # (batch, seq_len//128, D)
+            
+            # Stack labels
+            batch_y = jnp.array([s["y"] for s in samples])  # (batch,)
+            
+            # Stack organism indices
+            batch_org = jnp.stack([s["organism_index"] for s in samples], axis=0)  # (batch, 1)
+            batch_org = batch_org.squeeze(-1) if batch_org.shape[-1] == 1 else batch_org  # (batch,)
+            
+            return {
+                "encoder_output": batch_encoder_output,
+                "y": batch_y,
+                "organism_index": batch_org,
+            }
+        else:
+            # Normal mode: stack sequences
+            seqs = [s["seq"] for s in samples]
+            max_len = max(s.shape[0] for s in seqs)
+            
+            # Pad sequences to same length
+            padded_seqs = []
+            for seq in seqs:
+                if seq.shape[0] < max_len:
+                    padding = jnp.zeros((max_len - seq.shape[0], 4))
+                    seq = jnp.concatenate([seq, padding], axis=0)
+                padded_seqs.append(seq)
+            
+            batch_seq = jnp.stack(padded_seqs, axis=0)  # (batch, seq_len, 4)
+            
+            # Stack labels
+            batch_y = jnp.array([s["y"] for s in samples])  # (batch,)
+            
+            # Stack organism indices
+            batch_org = jnp.stack([s["organism_index"] for s in samples], axis=0)  # (batch, 1)
+            batch_org = batch_org.squeeze(-1) if batch_org.shape[-1] == 1 else batch_org  # (batch,)
+            
+            return {
+                "seq": batch_seq,
+                "y": batch_y,
+                "organism_index": batch_org,
+            }
     
     def __len__(self):
         """Return number of batches."""

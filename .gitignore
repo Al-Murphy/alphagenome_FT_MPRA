@@ -214,3 +214,5 @@ wandb/*
 wandb
 results/
 results/*
+.cache/
+.cache/*

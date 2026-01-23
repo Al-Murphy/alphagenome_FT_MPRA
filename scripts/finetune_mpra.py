@@ -45,12 +45,30 @@ USAGE EXAMPLES:
        --num_epochs 50 \
        --learning_rate 1e-3 \
        --second_stage_lr 1e-5
+   Note: When two-stage training is enabled, Stage 1 automatically saves the full model
+   (not just the head) to enable Stage 2 to properly load and unfreeze the encoder.
 
 10. Resume from Stage 2 (skip Stage 1, requires Stage 1 checkpoint):
    python scripts/finetune_mpra.py \
        --num_epochs 50 \
        --second_stage_lr 1e-5 \
        --resume_from_stage2
+
+11. Use cached embeddings for faster training (Stage 1 only, no augmentations):
+   # First, pre-compute embeddings:
+   python scripts/cache_embeddings.py --cell_type HepG2 --split train
+   python scripts/cache_embeddings.py --cell_type HepG2 --split val
+   python scripts/cache_embeddings.py --cell_type HepG2 --split test
+   
+   # Then train with cached embeddings:
+   python scripts/finetune_mpra.py \
+       --cell_type HepG2 \
+       --use_cached_embeddings \
+       --cache_file ./.cache/embeddings/HepG2_train_embeddings.pkl \
+       --num_epochs 100 \
+       --learning_rate 1e-3
+   Note: Cached embeddings disable augmentations and two-stage training.
+   This is ideal for hyperparameter sweeps where you want fast iteration.
 """
 
 import argparse
@@ -118,8 +136,8 @@ def main():
         '--pooling_type',
         type=str,
         default='sum',
-        choices=['mean', 'sum', 'max'],
-        help='Pooling type for MPRA head'
+        choices=['mean', 'sum', 'max', 'center', 'flatten'],
+        help='Pooling type for MPRA head: sum/mean/max (pool center window), center (single position), flatten (all positions)'
     )
     parser.add_argument(
         '--no_freeze_backbone',
@@ -128,15 +146,37 @@ def main():
     )
     parser.add_argument(
         '--nl_size',
-        type=int,
-        default=1024,
-        help='Number of hidden units for the MLP'
+        type=str,
+        default='1024',
+        help='Hidden layer sizes: single int (e.g., "1024") or comma-separated list (e.g., "512,256") for multiple layers'
     )
     parser.add_argument(
         '--do',
         type=float,
         default=None,
         help='Dropout rate for the MLP - None means no dropout'
+    )
+    parser.add_argument(
+        '--activation',
+        type=str,
+        default='relu',
+        choices=['relu', 'gelu'],
+        help='Activation function: relu or gelu'
+    )
+    
+    # Cached embeddings (for faster training)
+    parser.add_argument(
+        '--use_cached_embeddings',
+        action='store_true',
+        help='Use pre-computed cached encoder embeddings (requires cache file). '
+             'When enabled, augmentations are automatically disabled.'
+    )
+    parser.add_argument(
+        '--cache_file',
+        type=str,
+        default=None,
+        help='Path to cached embeddings file (required if use_cached_embeddings=True). '
+             'Should be created using scripts/cache_embeddings.py'
     )
     
     # Training parameters
@@ -164,6 +204,37 @@ def main():
         default=None,
         help='Gradient clipping value. If set, gradients are clipped to this maximum norm (e.g., 1.0 or 5.0). Default: None (no clipping)'
     )
+    parser.add_argument(
+        '--optimizer',
+        type=str,
+        default='adam',
+        choices=['adam', 'adamw'],
+        help='Optimizer type: adam or adamw'
+    )
+    parser.add_argument(
+        '--weight_decay',
+        type=float,
+        default=None,
+        help='Weight decay (L2 regularization) for AdamW optimizer (e.g., 1e-6)'
+    )
+    parser.add_argument(
+        '--lr_scheduler',
+        type=str,
+        default=None,
+        choices=['plateau', 'cosine'],
+        help='Learning rate scheduler: plateau (reduce on plateau) or cosine (cosine annealing)'
+    )
+    parser.add_argument(
+        '--no_val_split',
+        action='store_true',
+        help='Put all data in training set (no validation split). Use for cosine scheduler without validation.'
+    )
+    parser.add_argument(
+        '--save_test_results',
+        type=str,
+        default=None,
+        help='Path to CSV file to save test set performance results for benchmarking'
+    )
     
     # Checkpointing and early stopping
     parser.add_argument(
@@ -175,7 +246,9 @@ def main():
     parser.add_argument(
         '--save_full_model',
         action='store_true',
-        help='Save full model including backbone (otherwise only saves head)'
+        help='Save full model including backbone (otherwise only saves head). '
+             'Note: When two-stage training is enabled (--second_stage_lr), Stage 1 '
+             'automatically saves the full model regardless of this flag.'
     )
     parser.add_argument(
         '--early_stopping_patience',
@@ -270,6 +343,15 @@ def main():
     print("=" * 80)
     print()
     
+    # Parse nl_size (can be single int or comma-separated list)
+    try:
+        if ',' in args.nl_size:
+            nl_size = [int(x.strip()) for x in args.nl_size.split(',')]
+        else:
+            nl_size = int(args.nl_size)
+    except ValueError:
+        raise ValueError(f"Invalid nl_size format: {args.nl_size}. Use single int (e.g., '1024') or comma-separated list (e.g., '512,256')")
+    
     # Register custom MPRA head
     print("Registering custom MPRA head...")
     register_custom_head(
@@ -283,8 +365,9 @@ def main():
             metadata={
                 'center_bp': args.center_bp,
                 'pooling_type': args.pooling_type,
-                'nl_size': args.nl_size,
-                'do': args.do
+                'nl_size': nl_size,
+                'do': args.do,
+                'activation': args.activation,
             }
         )
     )
@@ -307,32 +390,71 @@ def main():
     else:
         print("\nTraining full model (backbone + head)...")
     
+    # Validate cached embeddings setup
+    if args.use_cached_embeddings:
+        if args.cache_file is None:
+            raise ValueError("--cache_file must be provided when --use_cached_embeddings is enabled")
+        if args.second_stage_lr is not None:
+            raise ValueError("Cached embeddings cannot be used with two-stage training (--second_stage_lr). "
+                           "Stage 2 requires training the encoder, which needs sequences, not cached embeddings.")
+        print(f"\nUsing cached embeddings from: {args.cache_file}")
+        print("  Note: Augmentations are automatically disabled when using cached embeddings")
+        # When using cached embeddings, default to saving full model for easier downstream use
+        if not args.save_full_model:
+            print("  Note: Setting save_full_model=True for cached embeddings mode (recommended for downstream use)")
+            args.save_full_model = True
+    
     # Create datasets
     print(f"\nLoading datasets (cell_type={args.cell_type})...")
     train_dataset = LentiMPRADataset(
         model=model_with_custom,
         cell_type=args.cell_type,
         split='train',
-        random_shift=args.random_shift,
+        random_shift=args.random_shift if not args.use_cached_embeddings else False,
         random_shift_likelihood=args.random_shift_likelihood,
-        reverse_complement=args.reverse_complement
+        reverse_complement=args.reverse_complement if not args.use_cached_embeddings else False,
+        use_cached_embeddings=args.use_cached_embeddings,
+        cache_file=args.cache_file if args.use_cached_embeddings else None,
     )
-    val_dataset = LentiMPRADataset(
-        model=model_with_custom,
-        cell_type=args.cell_type,
-        split='val',
-        random_shift=False,
-        reverse_complement=False
-    )
+    # Determine cache files for val and test splits
+    val_cache_file = None
+    test_cache_file = None
+    if args.use_cached_embeddings and args.cache_file:
+        from pathlib import Path
+        cache_path = Path(args.cache_file)
+        # Assume cache file naming: {cell_type}_{split}_embeddings.pkl
+        val_cache_file = str(cache_path.parent / f"{args.cell_type}_val_embeddings.pkl")
+        test_cache_file = str(cache_path.parent / f"{args.cell_type}_test_embeddings.pkl")
+    
+    # Handle no validation split case (merge train and val)
+    if args.no_val_split:
+        print("  Note: Merging train and val splits (no_val_split=True)")
+        val_dataset = None
+    else:
+        val_dataset = LentiMPRADataset(
+            model=model_with_custom,
+            cell_type=args.cell_type,
+            split='val',
+            random_shift=False,
+            reverse_complement=False,
+            use_cached_embeddings=args.use_cached_embeddings,
+            cache_file=val_cache_file,
+        )
+    
     test_dataset = LentiMPRADataset(
         model=model_with_custom,
         cell_type=args.cell_type,
         split='test',
         random_shift=False,
-        reverse_complement=False
+        reverse_complement=False,
+        use_cached_embeddings=args.use_cached_embeddings,
+        cache_file=test_cache_file,
     )
     print(f"✓ Train dataset: {len(train_dataset)} samples")
-    print(f"✓ Val dataset:   {len(val_dataset)} samples")
+    if val_dataset:
+        print(f"✓ Val dataset:   {len(val_dataset)} samples")
+    else:
+        print(f"✓ Val dataset:   None (no_val_split=True)")
     print(f"✓ Test dataset:   {len(test_dataset)} samples")
     
     # Create dataloaders
@@ -346,7 +468,7 @@ def main():
         val_dataset,
         batch_size=args.batch_size,
         shuffle=False
-    )
+    ) if val_dataset else None
     test_loader = MPRADataLoader(
         test_dataset,
         batch_size=args.batch_size,
@@ -360,6 +482,19 @@ def main():
     print("\n" + "=" * 80)
     print("Starting Training")
     print("=" * 80)
+    
+    # Prepare wandb config with hyperparameters
+    wandb_config_dict = {
+        'cell_type': args.cell_type,
+        'optimizer': args.optimizer,
+        'weight_decay': args.weight_decay,
+        'pooling_type': args.pooling_type,
+        'nl_size': args.nl_size,
+        'activation': args.activation,
+        'dropout': args.do,
+        'lr_scheduler': args.lr_scheduler,
+        'no_val_split': args.no_val_split,
+    }
     
     history = train(
         model_with_custom,
@@ -380,6 +515,10 @@ def main():
         use_wandb=not args.no_wandb,
         wandb_project=args.wandb_project,
         wandb_name=args.wandb_name,
+        wandb_config=wandb_config_dict,
+        use_cached_embeddings=args.use_cached_embeddings,
+        lr_scheduler=args.lr_scheduler,
+        save_test_results=args.save_test_results,
     )
     
     print("\n" + "=" * 80)

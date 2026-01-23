@@ -276,8 +276,14 @@ class EncoderMPRAHead(CustomHead):
         
         # Get center region in base pairs (default 256bp = 2 encoder positions)
         center_bp = metadata.get('center_bp', 256) if metadata else 256
+        # Hidden layer sizes: can be int (single layer) or list (multiple layers)
         nl_size = metadata.get('nl_size', 1024) if metadata else 1024
-        self._nl_size = nl_size
+        if isinstance(nl_size, int):
+            self._hidden_sizes = [nl_size]
+        elif isinstance(nl_size, list):
+            self._hidden_sizes = nl_size
+        else:
+            raise ValueError(f"nl_size must be int or list, got {type(nl_size)}")
         do = metadata.get('do', None) if metadata else None
         self._do = do
         # Convert base pairs to encoder positions (128bp resolution)
@@ -286,8 +292,14 @@ class EncoderMPRAHead(CustomHead):
         pooling_type = (
             metadata.get('pooling_type', 'sum') if metadata else 'sum'
         )
-        assert pooling_type in ['sum', 'mean', 'max']
+        assert pooling_type in ['sum', 'mean', 'max', 'center', 'flatten'], \
+            f"Invalid pooling type: {pooling_type}. Must be one of: sum, mean, max, center, flatten"
         self._pooling_type = pooling_type
+        
+        # Activation function
+        activation = metadata.get('activation', 'relu') if metadata else 'relu'
+        assert activation in ['relu', 'gelu'], f"Invalid activation: {activation}. Must be 'relu' or 'gelu'"
+        self._activation = activation
     
     def predict(self, embeddings, organism_index, **kwargs):
         """Predict using raw encoder output (before transformer).
@@ -317,22 +329,45 @@ class EncoderMPRAHead(CustomHead):
         x = embeddings.encoder_output  # (batch, seq_len//128, D)
         # Prediction layers operating at 128bp resolution
         x = layers.LayerNorm(name='norm')(x)
-        x = hk.Linear(self._nl_size, name='hidden')(x)
-        # Apply dropout only during training (when RNG is available)
-        # During validation/evaluation, RNG is None, so hk.next_rng_key() will fail
-        # In that case, we skip dropout (which is correct for evaluation)
-        if self._do is not None:
-            try:
-                rng_key = hk.next_rng_key()
-                x = hk.dropout(rng_key, self._do, x)
-            except (RuntimeError, ValueError, AttributeError):
-                # RNG not available (evaluation mode) - skip dropout
-                # This is expected during validation/testing when rng=None is passed to apply()
-                pass
-        x = jax.nn.relu(x)
-        per_position_predictions = hk.Linear(self._num_tracks, name='output')(x)
+        
+        # Handle flatten pooling: flatten all positions before dense layers
+        if self._pooling_type == 'flatten':
+            # Flatten all positions: (batch, seq_len//128, D) -> (batch, seq_len//128 * D)
+            batch_size = x.shape[0]
+            x = x.reshape(batch_size, -1)  # Flatten spatial dimensions
+            # Now x is (batch, flattened_features)
+        # For other pooling types, keep per-position structure
+        
+        # Multiple hidden layers
+        for i, hidden_size in enumerate(self._hidden_sizes):
+            x = hk.Linear(hidden_size, name=f'hidden_{i}')(x)
+            # Apply dropout only during training (when RNG is available)
+            if self._do is not None:
+                try:
+                    rng_key = hk.next_rng_key()
+                    x = hk.dropout(rng_key, self._do, x)
+                except (RuntimeError, ValueError, AttributeError):
+                    # RNG not available (evaluation mode) - skip dropout
+                    pass
+            # Apply activation
+            if self._activation == 'gelu':
+                x = jax.nn.gelu(x)
+            else:  # relu
+                x = jax.nn.relu(x)
+        
+        # Output layer
+        if self._pooling_type == 'flatten':
+            # For flatten, output is already per-sample: (batch, num_tracks)
+            per_position_predictions = hk.Linear(self._num_tracks, name='output')(x)
+            # Reshape to match expected format: (batch, 1, num_tracks) for consistency
+            per_position_predictions = per_position_predictions[:, None, :]
+        else:
+            # For other pooling types, output per-position: (batch, seq_len//128, num_tracks)
+            per_position_predictions = hk.Linear(self._num_tracks, name='output')(x)
+        
         # Return per-position predictions at 128bp resolution (rank 3)
-        # Shape: (batch, seq_len//128, num_tracks)
+        # Shape: (batch, seq_len//128, num_tracks) for normal pooling
+        # Shape: (batch, 1, num_tracks) for flatten pooling
         return per_position_predictions
     
     def loss(self, predictions, batch):
@@ -354,26 +389,37 @@ class EncoderMPRAHead(CustomHead):
         # Note: sequence_length is in encoder positions (128bp resolution)
         seq_len = predictions.shape[1]  # Length in encoder positions
         
-        # For short sequences, use the entire sequence instead of center window
-        # window_size is in encoder positions (each position = 128bp)
-        window_size = jnp.minimum(self._center_window_positions, seq_len)
-        center_start = (seq_len - window_size) // 2
-        center_start = jnp.maximum(center_start, 0)
-        
-        center_predictions = jax.lax.dynamic_slice_in_dim(
-            predictions,
-            start_index=center_start,
-            slice_size=window_size,
-            axis=1
-        )
-        
-        # Pool to get scalar per batch
-        if self._pooling_type == 'mean':
-            pred_values = jnp.mean(center_predictions, axis=1)  # (batch, num_tracks)
-        elif self._pooling_type == 'max':
-            pred_values = jnp.max(center_predictions, axis=1)  # (batch, num_tracks)
-        elif self._pooling_type == 'sum':
-            pred_values = jnp.sum(center_predictions, axis=1)  # (batch, num_tracks)
+        # Handle different pooling types
+        if self._pooling_type == 'flatten':
+            # For flatten, predictions are already per-sample (batch, 1, num_tracks)
+            # from the predict() function, so just squeeze the sequence dimension
+            pred_values = predictions.squeeze(1)  # (batch, num_tracks)
+        elif self._pooling_type == 'center':
+            # Take only the center position
+            center_idx = seq_len // 2
+            pred_values = predictions[:, center_idx:center_idx+1, :]  # (batch, 1, num_tracks)
+            pred_values = pred_values.squeeze(1)  # (batch, num_tracks)
+        else:
+            # For short sequences, use the entire sequence instead of center window
+            # window_size is in encoder positions (each position = 128bp)
+            window_size = jnp.minimum(self._center_window_positions, seq_len)
+            center_start = (seq_len - window_size) // 2
+            center_start = jnp.maximum(center_start, 0)
+            
+            center_predictions = jax.lax.dynamic_slice_in_dim(
+                predictions,
+                start_index=center_start,
+                slice_size=window_size,
+                axis=1
+            )
+            
+            # Pool to get scalar per batch
+            if self._pooling_type == 'mean':
+                pred_values = jnp.mean(center_predictions, axis=1)  # (batch, num_tracks)
+            elif self._pooling_type == 'max':
+                pred_values = jnp.max(center_predictions, axis=1)  # (batch, num_tracks)
+            elif self._pooling_type == 'sum':
+                pred_values = jnp.sum(center_predictions, axis=1)  # (batch, num_tracks)
         if targets.ndim == 1:
             targets = targets[:, None]
         
