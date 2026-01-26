@@ -1,74 +1,70 @@
 """
-Finetune AlphaGenome with MPRA head on LentiMPRA dataset from 
-[Agarwal et al., 2025](https://www.nature.com/articles/s41586-024-08430-9)
+Finetune AlphaGenome with DeepSTARR head on DeepSTARR dataset from
+[de Almeida et al., 2022](https://www.nature.com/articles/s41588-022-01048-5)
+
+DeepSTARR predicts two types of enhancer activity:
+- Developmental enhancer activity (Dev_log2_enrichment)
+- Housekeeping enhancer activity (Hk_log2_enrichment)
 
 USAGE EXAMPLES:
 
 1. Basic training (default parameters):
-   python scripts/finetune_mpra.py
+   python scripts/finetune_starrseq.py
 
 2. Custom hyperparameters:
-   python scripts/finetune_mpra.py \
+   python scripts/finetune_starrseq.py \
        --num_epochs 20 \
        --learning_rate 1e-4 \
        --batch_size 64
 
 3. Train without Weights & Biases logging:
-   python scripts/finetune_mpra.py --no_wandb
+   python scripts/finetune_starrseq.py --no_wandb
 
-4. Train on different cell type:
-   python scripts/finetune_mpra.py --cell_type K562
-
-5. Train with gradient accumulation (reduces memory):
-   python scripts/finetune_mpra.py \
+4. Train with gradient accumulation (reduces memory):
+   python scripts/finetune_starrseq.py \
        --batch_size 32 \
        --gradient_accumulation_steps 4
 
-6. Custom checkpoint directory and early stopping:
-   python scripts/finetune_mpra.py \
-       --checkpoint_dir ./my_checkpoints/mpra_model \
+5. Custom checkpoint directory and early stopping:
+   python scripts/finetune_starrseq.py \
+       --checkpoint_dir ./my_checkpoints/deepstarr_model \
        --early_stopping_patience 10
 
-7. Full model training (unfreeze backbone):
-   python scripts/finetune_mpra.py \
+6. Full model training (unfreeze backbone):
+   python scripts/finetune_starrseq.py \
        --no_freeze_backbone \
        --save_full_model \
        --learning_rate 1e-5
 
-8. Evaluate validation/test multiple times per epoch:
-   python scripts/finetune_mpra.py \
+7. Evaluate validation/test multiple times per epoch:
+   python scripts/finetune_starrseq.py \
        --val_eval_frequency 3 \
        --test_eval_frequency 2
 
-9. Two-stage training (unfreeze encoder in Stage 2):
-   python scripts/finetune_mpra.py \
+8. Two-stage training (unfreeze encoder in Stage 2):
+   python scripts/finetune_starrseq.py \
        --num_epochs 50 \
        --learning_rate 1e-3 \
        --second_stage_lr 1e-5
-   Note: When two-stage training is enabled, Stage 1 automatically saves the full model
-   (not just the head) to enable Stage 2 to properly load and unfreeze the encoder.
 
-10. Resume from Stage 2 (skip Stage 1, requires Stage 1 checkpoint):
-   python scripts/finetune_mpra.py \
+9. Resume from Stage 2 (skip Stage 1, requires Stage 1 checkpoint):
+   python scripts/finetune_starrseq.py \
        --num_epochs 50 \
        --second_stage_lr 1e-5 \
        --resume_from_stage2
 
-11. Use cached embeddings for faster training (Stage 1 only, no augmentations):
-   # First, pre-compute embeddings:
-   python scripts/cache_embeddings.py --cell_type HepG2 --split train
-   python scripts/cache_embeddings.py --cell_type HepG2 --split val
-   python scripts/cache_embeddings.py --cell_type HepG2 --split test
-   
-   # Then train with cached embeddings:
-   python scripts/finetune_mpra.py \
-       --cell_type HepG2 \
-       --use_cached_embeddings \
-       --cache_file ./.cache/embeddings/HepG2_train_embeddings.pkl \
-       --num_epochs 100 \
-       --learning_rate 1e-3
-   Note: Cached embeddings disable augmentations and two-stage training.
-   This is ideal for hyperparameter sweeps where you want fast iteration.
+10. Use cached embeddings for faster training (Stage 1 only, no augmentations):
+    # First, pre-compute embeddings:
+    python scripts/cache_embeddings.py --dataset deepstarr --split train
+    python scripts/cache_embeddings.py --dataset deepstarr --split val
+    python scripts/cache_embeddings.py --dataset deepstarr --split test
+    
+    # Then train with cached embeddings:
+    python scripts/finetune_starrseq.py \
+        --use_cached_embeddings \
+        --cache_file ./.cache/embeddings/deepstarr_train_embeddings.pkl \
+        --num_epochs 100 \
+        --learning_rate 1e-3
 """
 
 import argparse
@@ -76,6 +72,7 @@ import jax
 import jax.numpy as jnp
 from alphagenome.models import dna_output
 from alphagenome.data import genome
+from alphagenome_research.model import dna_model
 from pathlib import Path
 # Import the finetuning extensions
 from alphagenome_ft import (
@@ -84,21 +81,21 @@ from alphagenome_ft import (
     register_custom_head,
     create_model_with_custom_heads,
 )
-from src import EncoderMPRAHead, LentiMPRADataset, MPRADataLoader, train
+from src import DeepSTARRHead, DeepSTARRDataset, STARRSeqDataLoader, train
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Finetune AlphaGenome with MPRA head on LentiMPRA dataset',
+        description='Finetune AlphaGenome with DeepSTARR head on DeepSTARR dataset',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     
     # Data parameters
     parser.add_argument(
-        '--cell_type',
+        '--data_path',
         type=str,
-        default='HepG2',
-        help='Cell type for MPRA data'
+        default='./data/deepstarr',
+        help='Path to DeepSTARR data directory'
     )
     parser.add_argument(
         '--batch_size',
@@ -119,6 +116,12 @@ def main():
         help='Likelihood of applying random shifts to training data'
     )
     parser.add_argument(
+        '--max_shift',
+        type=int,
+        default=20,
+        help='Maximum shift amount in base pairs'
+    )
+    parser.add_argument(
         '--reverse_complement',
         action='store_true',
         default=True,
@@ -137,7 +140,7 @@ def main():
         type=str,
         default='sum',
         choices=['mean', 'sum', 'max', 'center', 'flatten'],
-        help='Pooling type for MPRA head: sum/mean/max (pool center window), center (single position), flatten (all positions)'
+        help='Pooling type for head: sum/mean/max (pool center window), center (single position), flatten (all positions)'
     )
     parser.add_argument(
         '--no_freeze_backbone',
@@ -260,13 +263,13 @@ def main():
         '--val_eval_frequency',
         type=int,
         default=4,
-        help='Number of times to evaluate on validation set per epoch (default: 1, at end of epoch)'
+        help='Number of times to evaluate on validation set per epoch (default: 4)'
     )
     parser.add_argument(
         '--test_eval_frequency',
         type=int,
         default=4,
-        help='Number of times to evaluate on test set per epoch (default: 1, at end of epoch)'
+        help='Number of times to evaluate on test set per epoch (default: 4)'
     )
     parser.add_argument(
         '--second_stage_lr',
@@ -292,27 +295,27 @@ def main():
     parser.add_argument(
         '--wandb_project',
         type=str,
-        default='alphagenome-mpra',
+        default='alphagenome-deepstarr',
         help='Weights & Biases project name'
     )
     parser.add_argument(
         '--wandb_name',
         type=str,
-        default='mpra-head-encoder',
+        default='deepstarr-head-encoder',
         help='Weights & Biases run name'
     )
     
     args = parser.parse_args()
     
-    # Construct full checkpoint path from base dir, cell type, and run name
+    # Construct full checkpoint path from base dir and run name
     from pathlib import Path
-    checkpoint_path = (Path(args.checkpoint_dir) / args.cell_type / args.wandb_name).resolve()
+    checkpoint_path = (Path(args.checkpoint_dir) / "deepstarr" / args.wandb_name).resolve()
     
     # Print configuration
     print("=" * 80)
-    print("AlphaGenome MPRA Fine-tuning")
+    print("AlphaGenome DeepSTARR Fine-tuning")
     print("=" * 80)
-    print(f"Cell type:                  {args.cell_type}")
+    print(f"Data path:                  {args.data_path}")
     print(f"Batch size:                 {args.batch_size}")
     print(f"Number of epochs:           {args.num_epochs}")
     print(f"Learning rate:              {args.learning_rate}")
@@ -352,16 +355,16 @@ def main():
     except ValueError:
         raise ValueError(f"Invalid nl_size format: {args.nl_size}. Use single int (e.g., '1024') or comma-separated list (e.g., '512,256')")
     
-    # Register custom MPRA head
-    print("Registering custom MPRA head...")
+    # Register custom DeepSTARR head (2 outputs: developmental and housekeeping)
+    print("Registering custom DeepSTARR head...")
     register_custom_head(
-        'mpra_head',
-        EncoderMPRAHead,
+        'deepstarr_head',
+        DeepSTARRHead,
         HeadConfig(
             type=HeadType.GENOME_TRACKS,
-            name='mpra_head',
+            name='deepstarr_head',
             output_type=dna_output.OutputType.RNA_SEQ,
-            num_tracks=1,
+            num_tracks=2,  # Two outputs: developmental and housekeeping
             metadata={
                 'center_bp': args.center_bp,
                 'pooling_type': args.pooling_type,
@@ -377,7 +380,7 @@ def main():
     print("\nCreating model with custom heads...")
     model_with_custom = create_model_with_custom_heads(
         'all_folds',
-        custom_heads=['mpra_head'],
+        custom_heads=['deepstarr_head'],
         use_encoder_output=True
     )
     print("✓ Model created")
@@ -385,7 +388,7 @@ def main():
     # Freeze backbone if requested
     if not args.no_freeze_backbone:
         print("\nFreezing backbone (training head only)...")
-        model_with_custom.freeze_except_head('mpra_head')
+        model_with_custom.freeze_except_head('deepstarr_head')
         print("✓ Backbone frozen")
     else:
         print("\nTraining full model (backbone + head)...")
@@ -399,52 +402,56 @@ def main():
                            "Stage 2 requires training the encoder, which needs sequences, not cached embeddings.")
         print(f"\nUsing cached embeddings from: {args.cache_file}")
         print("  Note: Augmentations are automatically disabled when using cached embeddings")
-        # When using cached embeddings, default to saving full model for easier downstream use
         if not args.save_full_model:
             print("  Note: Setting save_full_model=True for cached embeddings mode (recommended for downstream use)")
             args.save_full_model = True
     
     # Create datasets
-    print(f"\nLoading datasets (cell_type={args.cell_type})...")
-    train_dataset = LentiMPRADataset(
+    print(f"\nLoading DeepSTARR datasets...")
+    train_dataset = DeepSTARRDataset(
         model=model_with_custom,
-        cell_type=args.cell_type,
+        path_to_data=args.data_path,
         split='train',
+        organism=dna_model.Organism.HOMO_SAPIENS, # DROSOPHILA_MELANOGASTER for DeepSTARR so we use HOMO_SAPIENS for now, could test mus musculus later
         random_shift=args.random_shift if not args.use_cached_embeddings else False,
         random_shift_likelihood=args.random_shift_likelihood,
+        max_shift=args.max_shift,
         reverse_complement=args.reverse_complement if not args.use_cached_embeddings else False,
         use_cached_embeddings=args.use_cached_embeddings,
         cache_file=args.cache_file if args.use_cached_embeddings else None,
     )
+    
     # Determine cache files for val and test splits
     val_cache_file = None
     test_cache_file = None
     if args.use_cached_embeddings and args.cache_file:
         from pathlib import Path
         cache_path = Path(args.cache_file)
-        # Assume cache file naming: {cell_type}_{split}_embeddings.pkl
-        val_cache_file = str(cache_path.parent / f"{args.cell_type}_val_embeddings.pkl")
-        test_cache_file = str(cache_path.parent / f"{args.cell_type}_test_embeddings.pkl")
+        # Assume cache file naming: deepstarr_{split}_embeddings.pkl
+        val_cache_file = str(cache_path.parent / "deepstarr_val_embeddings.pkl")
+        test_cache_file = str(cache_path.parent / "deepstarr_test_embeddings.pkl")
     
     # Handle no validation split case (merge train and val)
     if args.no_val_split:
         print("  Note: Merging train and val splits (no_val_split=True)")
         val_dataset = None
     else:
-        val_dataset = LentiMPRADataset(
+        val_dataset = DeepSTARRDataset(
             model=model_with_custom,
-            cell_type=args.cell_type,
+            path_to_data=args.data_path,
             split='val',
+            organism=dna_model.Organism.DROSOPHILA_MELANOGASTER,
             random_shift=False,
-                reverse_complement=False,
-                use_cached_embeddings=args.use_cached_embeddings,
-                cache_file=val_cache_file,
+            reverse_complement=False,
+            use_cached_embeddings=args.use_cached_embeddings,
+            cache_file=val_cache_file,
         )
     
-    test_dataset = LentiMPRADataset(
+    test_dataset = DeepSTARRDataset(
         model=model_with_custom,
-        cell_type=args.cell_type,
+        path_to_data=args.data_path,
         split='test',
+        organism=dna_model.Organism.DROSOPHILA_MELANOGASTER,
         random_shift=False,
         reverse_complement=False,
         use_cached_embeddings=args.use_cached_embeddings,
@@ -455,27 +462,27 @@ def main():
         print(f"✓ Val dataset:   {len(val_dataset)} samples")
     else:
         print(f"✓ Val dataset:   None (no_val_split=True)")
-        print(f"✓ Test dataset:   {len(test_dataset)} samples")
+    print(f"✓ Test dataset:   {len(test_dataset)} samples")
     
     # Create dataloaders
     print("\nCreating dataloaders...")
-    train_loader = MPRADataLoader(
+    train_loader = STARRSeqDataLoader(
         train_dataset,
         batch_size=args.batch_size,
         shuffle=True
     )
-    val_loader = MPRADataLoader(
+    val_loader = STARRSeqDataLoader(
         val_dataset,
         batch_size=args.batch_size,
         shuffle=False
     ) if val_dataset else None
-    test_loader = MPRADataLoader(
+    test_loader = STARRSeqDataLoader(
         test_dataset,
         batch_size=args.batch_size,
         shuffle=False
     )
     print(f"✓ Train batches: {len(train_loader)}")
-    print(f"✓ Val batches:   {len(val_loader)}")
+    print(f"✓ Val batches:   {len(val_loader) if val_loader else 'None'}")
     print(f"✓ Test batches:   {len(test_loader)}")
     
     # Train model
@@ -485,7 +492,7 @@ def main():
     
     # Prepare wandb config with hyperparameters
     wandb_config_dict = {
-        'cell_type': args.cell_type,
+        'dataset': 'deepstarr',
         'optimizer': args.optimizer,
         'weight_decay': args.weight_decay,
         'pooling_type': args.pooling_type,

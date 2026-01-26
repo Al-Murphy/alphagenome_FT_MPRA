@@ -23,20 +23,22 @@ except ImportError:
 from .data import MPRADataLoader
 
 
-# Cache for JIT-compiled head-only forward functions
-_head_only_forward_cache = {}
+# Cache for head-only forward functions and gradient functions
+_cached_functions = {}
 
-def _get_or_create_head_only_forward(model: Any, head_name: str):
-    """Get or create a JIT-compiled head-only forward function.
+def _create_head_only_functions(model: Any, head_name: str, loss_fn: Any = None):
+    """Create JIT-compiled head-only forward and gradient functions.
     
-    This function is cached and reused across calls for performance.
+    These functions are cached and reused for performance.
+    Computes forward + loss in a SINGLE transform for maximum efficiency.
+    
+    Returns a tuple of (forward_fn, grad_fn).
     """
     cache_key = (id(model), head_name)
     
-    if cache_key in _head_only_forward_cache:
-        return _head_only_forward_cache[cache_key]
+    if cache_key in _cached_functions:
+        return _cached_functions[cache_key]
     
-    # Create the head-only forward function once
     from alphagenome_ft.embeddings_extended import ExtendedEmbeddings
     import haiku as hk
     from alphagenome_ft import custom_heads as custom_heads_module
@@ -44,9 +46,11 @@ def _get_or_create_head_only_forward(model: Any, head_name: str):
     head_config = model._head_configs[head_name]
     num_organisms = len(model._metadata)
     
+    # Create SINGLE Haiku transform that does BOTH predict AND loss
+    # This avoids creating the head twice (once for predict, once for loss)
     @hk.transform_with_state
-    def head_forward(encoder_output, organism_index):
-        """Head-only forward pass using cached encoder output."""
+    def head_forward_and_loss(encoder_output, organism_index, targets=None):
+        """Head-only forward pass + loss computation in ONE transform."""
         embeddings = ExtendedEmbeddings(
             embeddings_1bp=None,
             embeddings_128bp=None,
@@ -58,49 +62,45 @@ def _get_or_create_head_only_forward(model: Any, head_name: str):
                 metadata=head_config.metadata,
                 num_organisms=num_organisms
             )
-            return head.predict(embeddings, organism_index)
+            predictions = head.predict(embeddings, organism_index)
+            
+            # Compute loss if targets provided
+            if targets is not None:
+                batch = {'targets': targets}
+                loss_dict = head.loss(predictions, batch)
+                return predictions, loss_dict
+            else:
+                return predictions, None
     
-    # JIT compile the apply function for performance
+    # JIT-compiled forward function (no loss)
     @jax.jit
-    def jitted_head_forward(params, state, encoder_output, organism_index):
-        predictions, _ = head_forward.apply(
+    def forward_fn(params, state, encoder_output, organism_index):
+        (predictions, _), new_state = head_forward_and_loss.apply(
             params,
             state,
             None,  # rng
             encoder_output,
-            organism_index
+            organism_index,
+            None  # no targets = no loss
         )
         return predictions
     
-    _head_only_forward_cache[cache_key] = jitted_head_forward
-    return jitted_head_forward
-
-def _predict_with_cached_embeddings(
-    model: Any,
-    params: Any,
-    state: Any,
-    encoder_output: jnp.ndarray,
-    organism_index: jnp.ndarray,
-    head_name: str,
-):
-    """Forward pass using cached encoder embeddings.
+    # JIT-compiled gradient function (with loss in same transform!)
+    @jax.jit
+    def grad_fn(params, state, encoder_output, organism_index, targets):
+        """Compute loss and gradients - forward + loss in ONE transform."""
+        def loss_fn_inner(p):
+            # Single transform call that does BOTH predict and loss!
+            (preds, loss_dict), _ = head_forward_and_loss.apply(
+                p, state, None, encoder_output, organism_index, targets
+            )
+            return loss_dict['loss'], loss_dict
+        
+        (loss_value, loss_dict), grads = jax.value_and_grad(loss_fn_inner, has_aux=True)(params)
+        return grads, loss_value, loss_dict
     
-    This bypasses the encoder and uses pre-computed embeddings directly.
-    Only runs the head forward pass. Uses JIT-compiled function for performance.
-    """
-    # Get or create JIT-compiled head-only forward function
-    head_forward_fn = _get_or_create_head_only_forward(model, head_name)
-    
-    # Apply JIT-compiled forward pass
-    with model._device_context:
-        predictions = head_forward_fn(
-            params,
-            state,
-            encoder_output,
-            organism_index
-        )
-    
-    return {head_name: predictions}
+    _cached_functions[cache_key] = (forward_fn, grad_fn)
+    return forward_fn, grad_fn
 
 
 def train_epoch(
@@ -126,6 +126,7 @@ def train_epoch(
         head_name: Name of the custom head to train
         gradient_accumulation_steps: Number of mini-batches to accumulate gradients
             before updating parameters. Use > 1 to reduce memory usage.
+        use_cached_embeddings: If True, use pre-computed embeddings (faster)
         
     Returns:
         Tuple of (metrics_dict, updated_optimizer_state, updated_rng_key)
@@ -139,49 +140,79 @@ def train_epoch(
     accumulated_pearson = 0.0
     step_count = 0
     
+    # Get cached functions if using embeddings (created once, reused)
+    if use_cached_embeddings:
+        _, grad_fn = _create_head_only_functions(model, head_name, loss_fn)
+    
     for batch in dataloader:
         rng_key, subkey = jax.random.split(rng_key)
         
         # Check if using cached embeddings
         if use_cached_embeddings and 'encoder_output' in batch:
-            # Use cached embeddings mode
+            # Use cached embeddings mode with JIT-compiled gradient function
             batch_size = batch['encoder_output'].shape[0]
             mini_batch_size = max(1, batch_size // gradient_accumulation_steps)
             
             for mini_batch_start in range(0, batch_size, mini_batch_size):
                 mini_batch_end = min(mini_batch_start + mini_batch_size, batch_size)
                 
-                # Extract mini-batch
-                mini_batch = {
-                    'encoder_output': batch['encoder_output'][mini_batch_start:mini_batch_end],
-                    'y': batch['y'][mini_batch_start:mini_batch_end],
-                    'organism_index': batch['organism_index'][mini_batch_start:mini_batch_end],
-                }
+                # Extract mini-batch data
+                encoder_output = batch['encoder_output'][mini_batch_start:mini_batch_end]
+                targets = batch['y'][mini_batch_start:mini_batch_end]
+                organism_index = batch['organism_index'][mini_batch_start:mini_batch_end]
                 
-                # Compute loss and gradients for mini-batch
-                def loss_fn_inner(params):
-                    # Get predictions using cached embeddings
-                    with model._device_context:
-                        predictions = _predict_with_cached_embeddings(
-                            model,
-                            params,
-                            model._state,
-                            mini_batch['encoder_output'],
-                            mini_batch['organism_index'],
-                            head_name,
-                        )
+                # Compute gradients using JIT-compiled function (NO function redefinition!)
+                with model._device_context:
+                    grads, loss_value, loss_dict = grad_fn(
+                        model._params,
+                        model._state,
+                        encoder_output,
+                        organism_index,
+                        targets
+                    )
+                
+                pearson = loss_dict.get('pearson_corr', 0.0)
+                
+                # Accumulate gradients and loss
+                if accumulated_grads is None:
+                    accumulated_grads = grads
+                    accumulated_loss = loss_value
+                    accumulated_pearson = pearson
+                else:
+                    accumulated_grads = jax.tree.map(
+                        lambda acc, new: acc + new,
+                        accumulated_grads,
+                        grads
+                    )
+                    accumulated_loss += loss_value
+                    accumulated_pearson += pearson
+                
+                step_count += 1
+                
+                # Update parameters after accumulating enough gradients
+                if step_count >= gradient_accumulation_steps:
+                    # Average accumulated gradients
+                    accumulated_grads = jax.tree.map(
+                        lambda g: g / gradient_accumulation_steps,
+                        accumulated_grads
+                    )
                     
-                    # Get predictions for our head
-                    head_predictions = predictions[head_name]
+                    # Update parameters
+                    updates, optimizer_state = opt_update(accumulated_grads, optimizer_state, model._params)
+                    model._params = optax.apply_updates(model._params, updates)
                     
-                    # Prepare batch for head's loss method (expects 'targets' key)
-                    loss_batch = {'targets': mini_batch['y']}
+                    # Track metrics
+                    avg_loss = accumulated_loss / gradient_accumulation_steps
+                    avg_pearson = accumulated_pearson / gradient_accumulation_steps
+                    total_loss += float(avg_loss)
+                    total_pearson += float(avg_pearson)
+                    num_batches += 1
                     
-                    # Use loss function to compute loss
-                    loss_dict = loss_fn(head_predictions, loss_batch)
-                    loss = loss_dict['loss']
-                    
-                    return loss, loss_dict
+                    # Reset accumulators
+                    accumulated_grads = None
+                    accumulated_loss = 0.0
+                    accumulated_pearson = 0.0
+                    step_count = 0
         else:
             # Normal mode: use sequences
             batch_size = batch['seq'].shape[0]
@@ -325,19 +356,25 @@ def validate(
     total_loss = 0.0
     total_pearson = 0.0
     num_batches = 0
+    additional_metrics = {}  # Track additional metrics like dev_pearson, hk_pearson
+    
+    # Get cached forward function if using embeddings
+    if use_cached_embeddings:
+        forward_fn, _ = _create_head_only_functions(model, head_name, loss_fn)
     
     for batch in dataloader:
         # Get predictions (no gradients)
         with model._device_context:
             if use_cached_embeddings and 'encoder_output' in batch:
-                predictions = _predict_with_cached_embeddings(
-                    model,
+                # Use JIT-compiled forward function
+                predictions = forward_fn(
                     model._params,
                     model._state,
                     batch['encoder_output'],
                     batch['organism_index'],
-                    head_name,
                 )
+                # Wrap in dict for consistency
+                predictions = {head_name: predictions}
             else:
                 predictions = model._predict(
                     model._params,
@@ -364,15 +401,29 @@ def validate(
         
         total_loss += float(loss)
         total_pearson += float(pearson)
+        
+        # Accumulate additional metrics (e.g., dev_pearson, hk_pearson for DeepSTARR)
+        for key, value in loss_dict.items():
+            if key not in ['loss', 'mse', 'pearson_corr']:
+                if key not in additional_metrics:
+                    additional_metrics[key] = 0.0
+                additional_metrics[key] += float(value)
+        
         num_batches += 1
     
     avg_loss = total_loss / num_batches if num_batches > 0 else 0.0
     avg_pearson = total_pearson / num_batches if num_batches > 0 else 0.0
     
-    return {
+    result = {
         'val_loss': avg_loss,
         'val_pearson': avg_pearson,
     }
+    
+    # Add averaged additional metrics
+    for key, value in additional_metrics.items():
+        result[f'val_{key}'] = value / num_batches if num_batches > 0 else 0.0
+    
+    return result
 
 def test(
     model: Any,
@@ -397,19 +448,25 @@ def test(
     total_loss = 0.0
     total_pearson = 0.0
     num_batches = 0
+    additional_metrics = {}  # Track additional metrics like dev_pearson, hk_pearson
+    
+    # Get cached forward function if using embeddings
+    if use_cached_embeddings:
+        forward_fn, _ = _create_head_only_functions(model, head_name, loss_fn)
     
     for batch in dataloader:
         # Get predictions (no gradients)
         with model._device_context:
             if use_cached_embeddings and 'encoder_output' in batch:
-                predictions = _predict_with_cached_embeddings(
-                    model,
+                # Use JIT-compiled forward function
+                predictions = forward_fn(
                     model._params,
                     model._state,
                     batch['encoder_output'],
                     batch['organism_index'],
-                    head_name,
                 )
+                # Wrap in dict for consistency
+                predictions = {head_name: predictions}
             else:
                 predictions = model._predict(
                     model._params,
@@ -436,15 +493,29 @@ def test(
         
         total_loss += float(loss)
         total_pearson += float(pearson)
+        
+        # Accumulate additional metrics (e.g., dev_pearson, hk_pearson for DeepSTARR)
+        for key, value in loss_dict.items():
+            if key not in ['loss', 'mse', 'pearson_corr']:
+                if key not in additional_metrics:
+                    additional_metrics[key] = 0.0
+                additional_metrics[key] += float(value)
+        
         num_batches += 1
     
     avg_loss = total_loss / num_batches if num_batches > 0 else 0.0
     avg_pearson = total_pearson / num_batches if num_batches > 0 else 0.0
     
-    return {
+    result = {
         'test_loss': avg_loss,
         'test_pearson': avg_pearson,
-    }    
+    }
+    
+    # Add averaged additional metrics
+    for key, value in additional_metrics.items():
+        result[f'test_{key}'] = value / num_batches if num_batches > 0 else 0.0
+    
+    return result    
 
 def _train_stage(
     model: Any,
@@ -511,6 +582,11 @@ def _train_stage(
         print(f"Checkpoint directory: {checkpoint_dir} (saving {save_type})")
     print(f"{'=' * 80}\n")
     
+    # Get cached gradient function if using embeddings (created once, reused)
+    cached_grad_fn = None
+    if use_cached_embeddings:
+        _, cached_grad_fn = _create_head_only_functions(model, head_name, loss_fn)
+    
     for epoch in range(num_epochs):
         # Track metrics for this epoch
         epoch_val_losses = []
@@ -563,24 +639,21 @@ def _train_stage(
                 mini_batch_end = min(mini_batch_start + mini_batch_size, batch_size)
                 
                 if use_cached_embeddings and 'encoder_output' in batch:
-                    mini_batch = {
-                        'encoder_output': batch['encoder_output'][mini_batch_start:mini_batch_end],
-                        'y': batch['y'][mini_batch_start:mini_batch_end],
-                        'organism_index': batch['organism_index'][mini_batch_start:mini_batch_end],
-                    }
+                    # Extract mini-batch data
+                    encoder_output = batch['encoder_output'][mini_batch_start:mini_batch_end]
+                    targets = batch['y'][mini_batch_start:mini_batch_end]
+                    organism_index = batch['organism_index'][mini_batch_start:mini_batch_end]
                     
-                    def loss_fn_inner(params):
-                        with model._device_context:
-                            predictions = _predict_with_cached_embeddings(
-                                model, params, model._state,
-                                mini_batch['encoder_output'],
-                                mini_batch['organism_index'],
-                                head_name,
-                            )
-                        head_predictions = predictions[head_name]
-                        loss_batch = {'targets': mini_batch['y']}
-                        loss_dict = loss_fn(head_predictions, loss_batch)
-                        return loss_dict['loss'], loss_dict
+                    # Use cached JIT-compiled gradient function
+                    with model._device_context:
+                        grads, loss, loss_dict = cached_grad_fn(
+                            model._params,
+                            model._state,
+                            encoder_output,
+                            organism_index,
+                            targets
+                        )
+                    pearson = loss_dict.get('pearson_corr', 0.0)
                 else:
                     mini_batch = {
                         'seq': batch['seq'][mini_batch_start:mini_batch_end],
@@ -602,10 +675,10 @@ def _train_stage(
                         loss_batch = {'targets': mini_batch['y']}
                         loss_dict = loss_fn(head_predictions, loss_batch)
                         return loss_dict['loss'], loss_dict
-                
-                grad_fn = jax.value_and_grad(loss_fn_inner, has_aux=True)
-                (loss, loss_dict), grads = grad_fn(model._params)
-                pearson = loss_dict.get('pearson_corr', 0.0)
+                    
+                    grad_fn = jax.value_and_grad(loss_fn_inner, has_aux=True)
+                    (loss, loss_dict), grads = grad_fn(model._params)
+                    pearson = loss_dict.get('pearson_corr', 0.0)
                 
                 if accumulated_grads is None:
                     accumulated_grads = grads
@@ -659,6 +732,10 @@ def _train_stage(
                         'val_loss': val_metrics['val_loss'],
                         'val_pearson': val_metrics['val_pearson'],
                     }
+                    # Include any additional metrics (e.g., val_dev_pearson, val_hk_pearson)
+                    for key, value in val_metrics.items():
+                        if key not in ['val_loss', 'val_pearson']:
+                            log_dict[key] = value
                     # Include running average of train metrics if available
                     if train_losses:
                         log_dict['train_loss'] = sum(train_losses) / len(train_losses)
@@ -681,6 +758,10 @@ def _train_stage(
                         'test_loss': test_metrics['test_loss'],
                         'test_pearson': test_metrics['test_pearson'],
                     }
+                    # Include any additional metrics (e.g., test_dev_pearson, test_hk_pearson)
+                    for key, value in test_metrics.items():
+                        if key not in ['test_loss', 'test_pearson']:
+                            log_dict[key] = value
                     # Include running average of train metrics if available
                     if train_losses:
                         log_dict['train_loss'] = sum(train_losses) / len(train_losses)
@@ -745,9 +826,17 @@ def _train_stage(
             if val_metrics:
                 log_dict['val_loss'] = val_metrics['val_loss']
                 log_dict['val_pearson'] = val_metrics['val_pearson']
+                # Include additional val metrics
+                for key, value in val_metrics.items():
+                    if key not in ['val_loss', 'val_pearson']:
+                        log_dict[key] = value
             if test_metrics:
                 log_dict['test_loss'] = test_metrics['test_loss']
                 log_dict['test_pearson'] = test_metrics['test_pearson']
+                 # Include additional test metrics
+                for key, value in test_metrics.items():
+                    if key not in ['test_loss', 'test_pearson']:
+                        log_dict[key] = value
             wandb.log(log_dict)
         
         # Checkpoint and early stopping logic (only if validation set is provided)
@@ -914,17 +1003,61 @@ def train(
         optimizer_type = wandb_config.get('optimizer', 'adam')
         weight_decay = wandb_config.get('weight_decay', None)
     
+    # Create learning rate schedule if specified
+    def create_lr_schedule(base_lr: float, total_steps: int):
+        """Create learning rate schedule based on lr_scheduler parameter."""
+        if lr_scheduler is None:
+            return base_lr
+        elif lr_scheduler == 'cosine':
+            # Cosine decay with warmup (10% of total steps)
+            warmup_steps = int(0.1 * total_steps)
+            return optax.warmup_cosine_decay_schedule(
+                init_value=0.0,
+                peak_value=base_lr,
+                warmup_steps=warmup_steps,
+                decay_steps=total_steps,
+                end_value=base_lr * 0.01
+            )
+        elif lr_scheduler == 'plateau':
+            # Reduce LR by 0.5 at 50% and 75% of training
+            boundaries = [int(0.5 * total_steps), int(0.75 * total_steps)]
+            values = [base_lr, base_lr * 0.5, base_lr * 0.25]
+            return optax.piecewise_constant_schedule(
+                init_value=values[0],
+                boundaries_and_scales={b: v/values[i] for i, (b, v) in enumerate(zip(boundaries, values[1:]))}
+            )
+        else:
+            print(f"Warning: Unknown lr_scheduler '{lr_scheduler}', using constant LR")
+            return base_lr
+    
     # Create optimizer with gradient clipping
     # If resuming from Stage 2, we'll create Stage 2 optimizer later
-    def create_optimizer(lr: float):
-        """Create optimizer with optional gradient clipping and weight decay."""
+    def create_optimizer(lr_or_schedule):
+        """Create optimizer with optional gradient clipping and weight decay.
+        
+        Weight decay is applied differently for Adam vs AdamW:
+        - AdamW: built-in decoupled weight decay
+        - Adam: L2 regularization via optax.add_decayed_weights
+        
+        Args:
+            lr_or_schedule: Learning rate (float) or schedule (callable)
+        """
         if optimizer_type.lower() == 'adamw':
+            # AdamW has built-in decoupled weight decay
             if weight_decay is not None:
-                optimizer = optax.adamw(learning_rate=lr, weight_decay=weight_decay)
+                optimizer = optax.adamw(learning_rate=lr_or_schedule, weight_decay=weight_decay)
             else:
-                optimizer = optax.adamw(learning_rate=lr)
+                optimizer = optax.adamw(learning_rate=lr_or_schedule)
         else:  # adam
-            optimizer = optax.adam(lr)
+            # Base Adam optimizer
+            optimizer = optax.adam(lr_or_schedule)
+            
+            # Add L2 regularization if weight_decay specified
+            if weight_decay is not None:
+                optimizer = optax.chain(
+                    optax.add_decayed_weights(weight_decay),
+                    optimizer
+                )
         
         # Add gradient clipping if specified
         if gradient_clip is not None:
@@ -935,8 +1068,14 @@ def train(
         
         return optimizer
     
+    # Calculate total steps for LR scheduler
+    steps_per_epoch = len(train_loader)
+    total_stage1_steps = stage1_epochs * steps_per_epoch
+    
     if not resume_from_stage2:
-        optimizer = create_optimizer(learning_rate)
+        # Create LR schedule and optimizer for Stage 1
+        lr_schedule = create_lr_schedule(learning_rate, total_stage1_steps)
+        optimizer = create_optimizer(lr_schedule)
         optimizer_state = optimizer.init(model._params)
         opt_update = optimizer.update
     else:
@@ -1139,7 +1278,9 @@ def train(
         
         # Create new optimizer for Stage 2 with different learning rate (same regularization)
         print(f"\nCreating optimizer for Stage 2 (LR={second_stage_lr})...")
-        optimizer_stage2 = create_optimizer(second_stage_lr)
+        total_stage2_steps = stage2_epochs * steps_per_epoch
+        lr_schedule_stage2 = create_lr_schedule(second_stage_lr, total_stage2_steps)
+        optimizer_stage2 = create_optimizer(lr_schedule_stage2)
         optimizer_state = optimizer_stage2.init(model._params)
         opt_update = optimizer_stage2.update
         print("✓ Optimizer created")

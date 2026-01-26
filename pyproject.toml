@@ -19,6 +19,7 @@ dependencies = [
     # After pushing to GitHub, replace above with:
     # "alphagenome-ft @ git+https://github.com/YOUR_USERNAME/alphagenome_ft.git",
     "wandb>=0.23.1",
+    "bio>=1.8.1",
 ]
 
 [tool.setuptools]

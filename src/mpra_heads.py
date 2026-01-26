@@ -395,23 +395,21 @@ class EncoderMPRAHead(CustomHead):
             # from the predict() function, so just squeeze the sequence dimension
             pred_values = predictions.squeeze(1)  # (batch, num_tracks)
         elif self._pooling_type == 'center':
-            # Take only the center position
+            # Take only the center position (use dynamic_slice for JIT compatibility)
             center_idx = seq_len // 2
-            pred_values = predictions[:, center_idx:center_idx+1, :]  # (batch, 1, num_tracks)
-            pred_values = pred_values.squeeze(1)  # (batch, num_tracks)
-        else:
-            # For short sequences, use the entire sequence instead of center window
-            # window_size is in encoder positions (each position = 128bp)
-            window_size = jnp.minimum(self._center_window_positions, seq_len)
-            center_start = (seq_len - window_size) // 2
-            center_start = jnp.maximum(center_start, 0)
-            
             center_predictions = jax.lax.dynamic_slice_in_dim(
                 predictions,
-                start_index=center_start,
-                slice_size=window_size,
+                start_index=center_idx,
+                slice_size=1,
                 axis=1
             )
+            pred_values = center_predictions.squeeze(1)  # (batch, num_tracks)
+        else:
+            # For center window pooling (mean/max/sum)
+            # For cached embeddings, sequences should all have same length
+            # Just pool over the entire sequence (no windowing for cached case)
+            # This is fine because the encoder output is already much shorter than original sequence
+            center_predictions = predictions
             
             # Pool to get scalar per batch
             if self._pooling_type == 'mean':
@@ -435,4 +433,188 @@ class EncoderMPRAHead(CustomHead):
             'loss': mse_loss,
             'mse': mse_loss,
             'pearson_corr': pearson_corr,
-        }        
+        }
+
+
+class DeepSTARRHead(CustomHead):
+    """Head for DeepSTARR enhancer activity prediction with two outputs.
+    
+    Predicts two types of enhancer activity:
+    - Developmental enhancer activity
+    - Housekeeping enhancer activity
+    
+    Similar architecture to EncoderMPRAHead but with 2 output tracks.
+    Uses raw encoder output (before transformer) at 128bp resolution.
+    
+    Configuration:
+    - center_bp: Center region to pool over, in BASE PAIRS (default: 256bp)
+    - pooling_type: How to pool ('mean', 'sum', 'max', 'center', 'flatten')
+    - nl_size: Hidden layer size(s) - int or list
+    - do: Dropout rate (optional)
+    - activation: 'relu' or 'gelu'
+    """
+    
+    ENCODER_RESOLUTION_BP = 128
+    
+    def __init__(
+        self, 
+        *, 
+        name, 
+        output_type, 
+        num_tracks, 
+        num_organisms, 
+        metadata,
+    ):
+        super().__init__(
+            name=name,
+            num_tracks=num_tracks,  # Should be 2 for DeepSTARR
+            output_type=output_type,
+            num_organisms=num_organisms,
+            metadata=metadata,
+        )
+        
+        # Get configuration from metadata
+        center_bp = metadata.get('center_bp', 256) if metadata else 256
+        nl_size = metadata.get('nl_size', 1024) if metadata else 1024
+        if isinstance(nl_size, int):
+            self._hidden_sizes = [nl_size]
+        elif isinstance(nl_size, list):
+            self._hidden_sizes = nl_size
+        else:
+            raise ValueError(f"nl_size must be int or list, got {type(nl_size)}")
+        
+        self._do = metadata.get('do', None) if metadata else None
+        self._center_window_positions = max(1, int(center_bp / self.ENCODER_RESOLUTION_BP))
+        
+        pooling_type = metadata.get('pooling_type', 'sum') if metadata else 'sum'
+        assert pooling_type in ['sum', 'mean', 'max', 'center', 'flatten'], \
+            f"Invalid pooling type: {pooling_type}"
+        self._pooling_type = pooling_type
+        
+        activation = metadata.get('activation', 'relu') if metadata else 'relu'
+        assert activation in ['relu', 'gelu'], f"Invalid activation: {activation}"
+        self._activation = activation
+    
+    def predict(self, embeddings, organism_index, **kwargs):
+        """Predict using raw encoder output (before transformer).
+        
+        Returns:
+            Per-position predictions with shape (batch, sequence_length//128, num_tracks=2).
+        """
+        # Require raw encoder output
+        if not hasattr(embeddings, 'encoder_output'):
+            raise AttributeError(
+                "DeepSTARRHead requires 'encoder_output' in embeddings object. "
+                "Set use_encoder_output=True when creating the model."
+            )
+        
+        if embeddings.encoder_output is None:
+            raise ValueError(
+                "encoder_output is None. Make sure the forward pass captures the encoder output."
+            )
+        
+        # Use raw encoder output
+        x = embeddings.encoder_output  # (batch, seq_len//128, D)
+        x = layers.LayerNorm(name='norm')(x)
+        
+        # Handle flatten pooling
+        if self._pooling_type == 'flatten':
+            batch_size = x.shape[0]
+            x = x.reshape(batch_size, -1)
+        
+        # Multiple hidden layers
+        for i, hidden_size in enumerate(self._hidden_sizes):
+            x = hk.Linear(hidden_size, name=f'hidden_{i}')(x)
+            # Apply dropout during training
+            if self._do is not None:
+                try:
+                    rng_key = hk.next_rng_key()
+                    x = hk.dropout(rng_key, self._do, x)
+                except (RuntimeError, ValueError, AttributeError):
+                    pass
+            # Apply activation
+            if self._activation == 'gelu':
+                x = jax.nn.gelu(x)
+            else:
+                x = jax.nn.relu(x)
+        
+        # Output layer (2 tracks: developmental and housekeeping)
+        if self._pooling_type == 'flatten':
+            per_position_predictions = hk.Linear(self._num_tracks, name='output')(x)
+            per_position_predictions = per_position_predictions[:, None, :]
+        else:
+            per_position_predictions = hk.Linear(self._num_tracks, name='output')(x)
+        
+        return per_position_predictions
+    
+    def loss(self, predictions, batch):
+        """Compute loss for DeepSTARR predictions (2 outputs).
+        
+        Args:
+            predictions: Per-position predictions (batch, sequence_length, 2)
+            batch: Batch data with 'targets' of shape (batch, 2)
+                   targets[:, 0] = developmental activity
+                   targets[:, 1] = housekeeping activity
+        
+        Returns:
+            Dictionary with loss metrics including per-task Pearson correlations
+        """
+        targets = batch.get('targets')
+        if targets is None:
+            return {'loss': jnp.array(0.0)}
+        
+        seq_len = predictions.shape[1]
+        
+        # Handle different pooling types
+        if self._pooling_type == 'flatten':
+            pred_values = predictions.squeeze(1)  # (batch, 2)
+        elif self._pooling_type == 'center':
+            center_idx = seq_len // 2
+            center_predictions = jax.lax.dynamic_slice_in_dim(
+                predictions,
+                start_index=center_idx,
+                slice_size=1,
+                axis=1
+            )
+            pred_values = center_predictions.squeeze(1)  # (batch, 2)
+        else:
+            # Pool over sequence
+            center_predictions = predictions
+            
+            if self._pooling_type == 'mean':
+                pred_values = jnp.mean(center_predictions, axis=1)
+            elif self._pooling_type == 'max':
+                pred_values = jnp.max(center_predictions, axis=1)
+            elif self._pooling_type == 'sum':
+                pred_values = jnp.sum(center_predictions, axis=1)
+        
+        # Ensure targets are 2D
+        if targets.ndim == 1:
+            targets = targets[:, None]
+        
+        # Compute MSE loss
+        mse_loss = jnp.mean((pred_values - targets) ** 2)
+        
+        # Calculate overall Pearson correlation
+        pred_flat = pred_values.flatten()
+        targets_flat = targets.flatten()
+        pearson_corr = jnp.corrcoef(pred_flat, targets_flat)[0, 1]
+        
+        # Calculate per-task Pearson correlations
+        # Task 0: Developmental
+        dev_pred = pred_values[:, 0]
+        dev_target = targets[:, 0]
+        dev_pearson = jnp.corrcoef(dev_pred, dev_target)[0, 1]
+        
+        # Task 1: Housekeeping
+        hk_pred = pred_values[:, 1]
+        hk_target = targets[:, 1]
+        hk_pearson = jnp.corrcoef(hk_pred, hk_target)[0, 1]
+        
+        return {
+            'loss': mse_loss,
+            'mse': mse_loss,
+            'pearson_corr': pearson_corr,
+            'dev_pearson': dev_pearson,
+            'hk_pearson': hk_pearson,
+        }
