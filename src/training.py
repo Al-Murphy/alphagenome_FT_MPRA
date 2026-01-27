@@ -133,11 +133,9 @@ def train_epoch(
     """
     
     total_loss = 0.0
-    total_pearson = 0.0
     num_batches = 0
     accumulated_grads = None
     accumulated_loss = 0.0
-    accumulated_pearson = 0.0
     step_count = 0
     
     # Get cached functions if using embeddings (created once, reused)
@@ -175,13 +173,10 @@ def train_epoch(
                         targets
                     )
                 
-                pearson = loss_dict.get('pearson_corr', 0.0)
-                
-                # Accumulate gradients and loss
+                # Accumulate gradients and loss (Pearson is non-additive, so we don't track it here)
                 if accumulated_grads is None:
                     accumulated_grads = grads
                     accumulated_loss = loss_value
-                    accumulated_pearson = pearson
                 else:
                     accumulated_grads = jax.tree.map(
                         lambda acc, new: acc + new,
@@ -189,7 +184,6 @@ def train_epoch(
                         grads
                     )
                     accumulated_loss += loss_value
-                    accumulated_pearson += pearson
                 
                 step_count += 1
                 
@@ -205,17 +199,14 @@ def train_epoch(
                     updates, optimizer_state = opt_update(accumulated_grads, optimizer_state, model._params)
                     model._params = optax.apply_updates(model._params, updates)
                     
-                    # Track metrics
+                    # Track metrics (only loss - Pearson is non-additive)
                     avg_loss = accumulated_loss / gradient_accumulation_steps
-                    avg_pearson = accumulated_pearson / gradient_accumulation_steps
                     total_loss += float(avg_loss)
-                    total_pearson += float(avg_pearson)
                     num_batches += 1
                     
                     # Reset accumulators
                     accumulated_grads = None
                     accumulated_loss = 0.0
-                    accumulated_pearson = 0.0
                     step_count = 0
         else:
             # Normal mode: use sequences
@@ -264,15 +255,11 @@ def train_epoch(
             grad_fn = jax.value_and_grad(loss_fn_inner, has_aux=True)
             (loss, loss_dict), grads = grad_fn(model._params)
             
-            # Extract pearson from loss_dict
-            pearson = loss_dict.get('pearson_corr', 0.0)
-            
-            # Accumulate gradients and loss
+            # Accumulate gradients and loss (Pearson is non-additive, so we don't track it here)
             if accumulated_grads is None:
                 # Initialize accumulated gradients with first gradient
                 accumulated_grads = grads
                 accumulated_loss = loss
-                accumulated_pearson = pearson
             else:
                 # Add gradients (they'll be averaged when we update)
                 accumulated_grads = jax.tree.map(
@@ -281,7 +268,6 @@ def train_epoch(
                     grads
                 )
                 accumulated_loss += loss
-                accumulated_pearson += pearson
             
             step_count += 1
             
@@ -297,44 +283,38 @@ def train_epoch(
                 updates, optimizer_state = opt_update(accumulated_grads, optimizer_state, model._params)
                 model._params = optax.apply_updates(model._params, updates)
                 
-                # Track average loss and pearson
+                # Track average loss (Pearson is non-additive, so we don't track it here)
                 avg_loss = accumulated_loss / gradient_accumulation_steps
-                avg_pearson = accumulated_pearson / gradient_accumulation_steps
                 total_loss += float(avg_loss)
-                total_pearson += float(avg_pearson)
                 num_batches += 1
                 
                 # Reset accumulation
                 accumulated_grads = None
                 accumulated_loss = 0.0
-                accumulated_pearson = 0.0
                 step_count = 0
+    
+    # Handle remaining accumulated gradients if batch doesn't divide evenly
+    # This must be OUTSIDE the batch loop to avoid extra updates per batch
+    if step_count > 0:
+        # Average accumulated gradients
+        accumulated_grads = jax.tree.map(
+            lambda g: g / step_count,
+            accumulated_grads
+        )
         
-        # Handle remaining accumulated gradients if batch doesn't divide evenly
-        if step_count > 0:
-            # Average accumulated gradients
-            accumulated_grads = jax.tree.map(
-                lambda g: g / step_count,
-                accumulated_grads
-            )
-            
-            # Update parameters
-            updates, optimizer_state = opt_update(accumulated_grads, optimizer_state, model._params)
-            model._params = optax.apply_updates(model._params, updates)
-            
-            # Track average loss and pearson
-            avg_loss = accumulated_loss / step_count
-            avg_pearson = accumulated_pearson / step_count
-            total_loss += float(avg_loss)
-            total_pearson += float(avg_pearson)
-            num_batches += 1
+        # Update parameters
+        updates, optimizer_state = opt_update(accumulated_grads, optimizer_state, model._params)
+        model._params = optax.apply_updates(model._params, updates)
+        
+        # Track average loss (Pearson is non-additive, so we don't track it here)
+        avg_loss = accumulated_loss / step_count
+        total_loss += float(avg_loss)
+        num_batches += 1
     
     avg_loss = total_loss / num_batches if num_batches > 0 else 0.0
-    avg_pearson = total_pearson / num_batches if num_batches > 0 else 0.0
     
     return {
         'loss': avg_loss,
-        'pearson': avg_pearson,
     }, optimizer_state, rng_key
 
 def validate(
@@ -684,7 +664,12 @@ def _train_stage(
         # Train epoch with periodic evaluation
         batch_idx = 0
         train_losses = []
-        train_pearsons = []
+        
+        # Initialize gradient accumulation variables OUTSIDE batch loop
+        # These persist across all batches in the epoch for proper leftover handling
+        accumulated_grads = None
+        accumulated_loss = 0.0
+        step_count = 0
         
         for batch in train_loader:
             rng_key, subkey = jax.random.split(rng_key)
@@ -695,11 +680,6 @@ def _train_stage(
             else:
                 batch_size = batch['seq'].shape[0]
             mini_batch_size = max(1, batch_size // gradient_accumulation_steps)
-            
-            accumulated_grads = None
-            accumulated_loss = 0.0
-            accumulated_pearson = 0.0
-            step_count = 0
             
             for mini_batch_start in range(0, batch_size, mini_batch_size):
                 mini_batch_end = min(mini_batch_start + mini_batch_size, batch_size)
@@ -719,7 +699,6 @@ def _train_stage(
                             organism_index,
                             targets
                         )
-                    pearson = loss_dict.get('pearson_corr', 0.0)
                 else:
                     # Use pre-compiled gradient function (created once per stage, not per batch!)
                     seq_batch = batch['seq'][mini_batch_start:mini_batch_end]
@@ -732,16 +711,14 @@ def _train_stage(
                         organism_index,
                         targets
                     )
-                    pearson = loss_dict.get('pearson_corr', 0.0)
                 
+                # Accumulate gradients and loss (Pearson is non-additive, so we don't track it here)
                 if accumulated_grads is None:
                     accumulated_grads = grads
                     accumulated_loss = loss
-                    accumulated_pearson = pearson
                 else:
                     accumulated_grads = jax.tree.map(lambda acc, new: acc + new, accumulated_grads, grads)
                     accumulated_loss += loss
-                    accumulated_pearson += pearson
                 
                 step_count += 1
                 
@@ -750,23 +727,10 @@ def _train_stage(
                     updates, optimizer_state = opt_update(accumulated_grads, optimizer_state, model._params)
                     model._params = optax.apply_updates(model._params, updates)
                     avg_loss = accumulated_loss / gradient_accumulation_steps
-                    avg_pearson = accumulated_pearson / gradient_accumulation_steps
                     train_losses.append(float(avg_loss))
-                    train_pearsons.append(float(avg_pearson))
                     accumulated_grads = None
                     accumulated_loss = 0.0
-                    accumulated_pearson = 0.0
                     step_count = 0
-            
-            # Handle remaining gradients
-            if step_count > 0:
-                accumulated_grads = jax.tree.map(lambda g: g / step_count, accumulated_grads)
-                updates, optimizer_state = opt_update(accumulated_grads, optimizer_state, model._params)
-                model._params = optax.apply_updates(model._params, updates)
-                avg_loss = accumulated_loss / step_count
-                avg_pearson = accumulated_pearson / step_count
-                train_losses.append(float(avg_loss))
-                train_pearsons.append(float(avg_pearson))
             
             batch_idx += 1
             global_step += 1
@@ -792,11 +756,9 @@ def _train_stage(
                     for key, value in val_metrics.items():
                         if key not in ['val_loss', 'val_pearson']:
                             log_dict[key] = value
-                    # Include running average of train metrics if available
+                    # Include running average of train loss if available
                     if train_losses:
                         log_dict['train_loss'] = sum(train_losses) / len(train_losses)
-                    if train_pearsons:
-                        log_dict['train_pearson'] = sum(train_pearsons) / len(train_pearsons)
                     wandb.log(log_dict)
                 
                 # Checkpoint and early stopping at each validation evaluation point
@@ -850,18 +812,29 @@ def _train_stage(
                     for key, value in test_metrics.items():
                         if key not in ['test_loss', 'test_pearson']:
                             log_dict[key] = value
-                    # Include running average of train metrics if available
+                    # Include running average of train loss if available
                     if train_losses:
                         log_dict['train_loss'] = sum(train_losses) / len(train_losses)
-                    if train_pearsons:
-                        log_dict['train_pearson'] = sum(train_pearsons) / len(train_pearsons)
                     wandb.log(log_dict)
         
-        # Average metrics for this epoch
+        # Handle remaining accumulated gradients if batch doesn't divide evenly
+        # This must be OUTSIDE the batch loop to avoid extra updates per batch
+        if step_count > 0:
+            accumulated_grads = jax.tree.map(lambda g: g / step_count, accumulated_grads)
+            updates, optimizer_state = opt_update(accumulated_grads, optimizer_state, model._params)
+            model._params = optax.apply_updates(model._params, updates)
+            avg_loss = accumulated_loss / step_count
+            train_losses.append(float(avg_loss))
+        
+        # Average loss for this epoch (from training steps)
         train_metrics = {
             'loss': sum(train_losses) / len(train_losses) if train_losses else 0.0,
-            'pearson': sum(train_pearsons) / len(train_pearsons) if train_pearsons else 0.0,
         }
+        
+        # Compute training Pearson via full-dataset evaluation (Pearson is non-additive)
+        # This matches how validation/test metrics are computed
+        train_eval_metrics = validate(model, train_loader, loss_fn=loss_fn, head_name=head_name, use_cached_embeddings=use_cached_embeddings)
+        train_metrics['pearson'] = train_eval_metrics['val_pearson']  # validate() returns 'val_pearson' but we're using it for train
         
         # Use last evaluation metrics
         val_metrics = None
@@ -892,7 +865,7 @@ def _train_stage(
         current_epoch = start_epoch + epoch + 1
         print(f"Epoch {current_epoch}: "
               f"train_loss={train_metrics['loss']:.6f}, "
-              f"train_pearson={train_metrics['pearson']:.4f}", end="")
+              f"train_pearson={train_metrics['pearson']:.4f} (epoch-level)", end="")
         if val_metrics:
             print(f", val_loss={val_metrics['val_loss']:.6f}, "
                   f"val_pearson={val_metrics['val_pearson']:.4f}", end="")
@@ -909,7 +882,7 @@ def _train_stage(
                 'epoch': current_epoch,
                 'stage': stage_name,
                 'train_loss': train_metrics['loss'],
-                'train_pearson': train_metrics['pearson'],
+                'train_pearson': train_metrics['pearson'],  # Epoch-level Pearson from full-dataset eval
             }
             if val_metrics:
                 log_dict['val_loss'] = val_metrics['val_loss']

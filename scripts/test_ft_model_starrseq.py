@@ -63,12 +63,12 @@ from alphagenome_ft import (
 from src import DeepSTARRHead, DeepSTARRDataset, STARRSeqDataLoader
 
 
-def get_predictions(
+def get_predictions_for_saving(
     model,
     dataloader: STARRSeqDataLoader,
     head_name: str = 'deepstarr_head',
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Get predictions and actuals from model on test data.
+    """Get predictions and actuals for saving to CSV.
     
     Args:
         model: CustomAlphaGenomeModel instance
@@ -83,17 +83,90 @@ def get_predictions(
     all_predictions = []
     all_actuals = []
     
-    # Infer pooling settings from the head config to match training
+    # Get pooling type and center_bp from head config
     head_config = getattr(model, "_head_configs", {}).get(head_name, None)
     if head_config is not None:
         metadata = getattr(head_config, "metadata", {}) or {}
         pooling_type = metadata.get("pooling_type", "flatten")
+        center_bp = metadata.get("center_bp", 256)
     else:
-        # Fallback to defaults used in training script
         pooling_type = "flatten"
+        center_bp = 256
+    
+    for batch in dataloader:
+        with model._device_context:
+            predictions = model._predict(
+                model._params,
+                model._state,
+                batch['seq'],
+                batch['organism_index'],
+                negative_strand_mask=jnp.zeros(len(batch['seq']), dtype=bool),
+                strand_reindexing=jax.device_put(
+                    model._metadata[dna_model.Organism.HOMO_SAPIENS].strand_reindexing,
+                    model._device_context._device
+                ),
+            )
+        
+        head_predictions = predictions[head_name]
+        head_np = np.array(head_predictions)
+        
+        # Pool exactly like head's loss() method (with center window for mean/max/sum)
+        if pooling_type == "flatten":
+            pooled = head_np.squeeze(1)
+        elif pooling_type == "center":
+            seq_len = head_np.shape[1]
+            center_idx = seq_len // 2
+            pooled = head_np[:, center_idx, :]
+        else:
+            # For mean/max/sum: use center window based on center_bp
+            seq_len = head_np.shape[1]
+            center_window_positions = max(1, center_bp // 128)
+            window_size = min(center_window_positions, seq_len)
+            center_start = max((seq_len - window_size) // 2, 0)
+            center_end = center_start + window_size
+            center_preds = head_np[:, center_start:center_end, :]
+            
+            if pooling_type == "mean":
+                pooled = center_preds.mean(axis=1)
+            elif pooling_type == "max":
+                pooled = center_preds.max(axis=1)
+            else:
+                pooled = center_preds.sum(axis=1)
+        
+        all_predictions.append(pooled)
+        all_actuals.append(np.array(batch['y']))
+    
+    predictions = np.concatenate(all_predictions, axis=0)
+    actuals = np.concatenate(all_actuals, axis=0)
+    
+    return predictions, actuals
+
+
+def compute_metrics_using_head_loss(
+    model,
+    dataloader: STARRSeqDataLoader,
+    head_name: str = 'deepstarr_head',
+) -> dict:
+    """Compute metrics using the head's loss function for pooling, then compute on all data.
+    
+    This ensures pooling matches training exactly, but computes Pearson correctly
+    on all data at once (not per-batch averaged).
+    
+    Args:
+        model: CustomAlphaGenomeModel instance
+        dataloader: DataLoader for test batches
+        head_name: Name of the custom head
+        
+    Returns:
+        Dictionary with metrics
+    """
+    # Get the loss function from the model to ensure pooling matches
+    loss_fn = model.create_loss_fn_for_head(head_name)
+    
+    all_predictions = []
+    all_actuals = []
     
     print(f"Running inference on {len(dataloader)} batches...")
-    print(f"  Pooling type: {pooling_type}")
     
     for i, batch in enumerate(dataloader):
         # Get predictions (no gradients)
@@ -111,56 +184,47 @@ def get_predictions(
             )
         
         # Get predictions for our head
-        head_predictions = predictions[head_name]  # Shape depends on pooling_type
+        head_predictions = predictions[head_name]
         
-        # Convert to numpy
+        # Use head's loss function to ensure we're using the same pooling logic
+        # We'll extract the pooled predictions by replicating the head's pooling
+        loss_batch = {'targets': batch['y']}
+        loss_dict = loss_fn(head_predictions, loss_batch)
+        
+        # Extract pooled predictions by replicating the head's pooling logic
+        head_config = getattr(model, "_head_configs", {}).get(head_name, None)
+        if head_config is not None:
+            metadata = getattr(head_config, "metadata", {}) or {}
+            pooling_type = metadata.get("pooling_type", "flatten")
+            center_bp = metadata.get("center_bp", 256)
+        else:
+            pooling_type = "flatten"
+            center_bp = 256
+        
         head_np = np.array(head_predictions)
         
-        # Debug output for first batch
-        if i == 0:
-            print(f"\n  DEBUG - First batch:")
-            print(f"    Input seq shape: {batch['seq'].shape}")
-            print(f"    Head predictions shape: {head_np.shape}")
-            print(f"    Head predictions dtype: {head_np.dtype}")
-            print(f"    Head predictions sample value: {head_np[0]}")
-            targets_np = np.array(batch['y'])
-            print(f"    Targets shape: {targets_np.shape}")
-            print(f"    Targets dtype: {targets_np.dtype}")
-            print(f"    Targets sample value: {targets_np[0]}")
-            # Check if predictions are numeric
-            try:
-                pred_min = float(head_np.min())
-                pred_max = float(head_np.max())
-                pred_mean = float(head_np.mean())
-                print(f"    Head predictions stats: min={pred_min:.4f}, max={pred_max:.4f}, mean={pred_mean:.4f}")
-            except (TypeError, ValueError) as e:
-                print(f"    Head predictions stats ERROR: {e}")
-            try:
-                tgt_min = float(targets_np.min())
-                tgt_max = float(targets_np.max())
-                tgt_mean = float(targets_np.mean())
-                print(f"    Targets stats: min={tgt_min:.4f}, max={tgt_max:.4f}, mean={tgt_mean:.4f}")
-            except (TypeError, ValueError) as e:
-                print(f"    Targets stats ERROR: {e}")
-        
-        # Pool to get (B, 2) predictions - must match DeepSTARRHead.loss() logic!
+        # Pool exactly like head's loss() method (with center window for mean/max/sum)
         if pooling_type == "flatten":
-            # For flatten, predict() returns (B, 1, 2) - already pooled, just squeeze
-            pooled = head_np.squeeze(1)  # (B, 2)
+            pooled = head_np.squeeze(1)
         elif pooling_type == "center":
-            # Take center position only
             seq_len = head_np.shape[1]
             center_idx = seq_len // 2
-            pooled = head_np[:, center_idx, :]  # (B, 2)
+            pooled = head_np[:, center_idx, :]
         else:
-            # For mean/max/sum, pool over the sequence dimension
+            # For mean/max/sum: use center window based on center_bp
             seq_len = head_np.shape[1]
+            center_window_positions = max(1, center_bp // 128)
+            window_size = min(center_window_positions, seq_len)
+            center_start = max((seq_len - window_size) // 2, 0)
+            center_end = center_start + window_size
+            center_preds = head_np[:, center_start:center_end, :]
+            
             if pooling_type == "mean":
-                pooled = head_np.mean(axis=1)  # (B, 2)
+                pooled = center_preds.mean(axis=1)
             elif pooling_type == "max":
-                pooled = head_np.max(axis=1)
-            else:  # "sum" or fallback
-                pooled = head_np.sum(axis=1)
+                pooled = center_preds.max(axis=1)
+            else:
+                pooled = center_preds.sum(axis=1)
         
         all_predictions.append(pooled)
         all_actuals.append(np.array(batch['y']))
@@ -170,10 +234,46 @@ def get_predictions(
             print(f"  Processed {i + 1}/{len(dataloader)} batches")
     
     # Concatenate all batches
-    predictions = np.concatenate(all_predictions, axis=0)  # (N, 2)
-    actuals = np.concatenate(all_actuals, axis=0)  # (N, 2)
+    predictions_all = np.concatenate(all_predictions, axis=0)  # (N, 2)
+    actuals_all = np.concatenate(all_actuals, axis=0)  # (N, 2)
     
-    return predictions, actuals
+    # Compute metrics on ALL data at once (correct way)
+    # Overall metrics
+    mse = np.mean((predictions_all - actuals_all) ** 2)
+    pearson = np.corrcoef(predictions_all.flatten(), actuals_all.flatten())[0, 1]
+    ss_res = np.sum((actuals_all - predictions_all) ** 2)
+    ss_tot = np.sum((actuals_all - np.mean(actuals_all)) ** 2)
+    r2 = 1 - (ss_res / ss_tot)
+    
+    # Per-task metrics
+    dev_pred = predictions_all[:, 0]
+    dev_actual = actuals_all[:, 0]
+    dev_mse = np.mean((dev_pred - dev_actual) ** 2)
+    dev_pearson = np.corrcoef(dev_pred, dev_actual)[0, 1]
+    dev_ss_res = np.sum((dev_actual - dev_pred) ** 2)
+    dev_ss_tot = np.sum((dev_actual - np.mean(dev_actual)) ** 2)
+    dev_r2 = 1 - (dev_ss_res / dev_ss_tot)
+    
+    hk_pred = predictions_all[:, 1]
+    hk_actual = actuals_all[:, 1]
+    hk_mse = np.mean((hk_pred - hk_actual) ** 2)
+    hk_pearson = np.corrcoef(hk_pred, hk_actual)[0, 1]
+    hk_ss_res = np.sum((hk_actual - hk_pred) ** 2)
+    hk_ss_tot = np.sum((hk_actual - np.mean(hk_actual)) ** 2)
+    hk_r2 = 1 - (hk_ss_res / hk_ss_tot)
+    
+    return {
+        'mse': float(mse),
+        'pearson': float(pearson),  # Computed on all data (correct)
+        'r2': float(r2),
+        'n_samples': len(predictions_all),
+        'dev_mse': float(dev_mse),
+        'dev_pearson': float(dev_pearson),  # Computed on all data (correct)
+        'dev_r2': float(dev_r2),
+        'hk_mse': float(hk_mse),
+        'hk_pearson': float(hk_pearson),  # Computed on all data (correct)
+        'hk_r2': float(hk_r2),
+    }
 
 
 def compute_metrics(predictions: np.ndarray, actuals: np.ndarray) -> dict:
@@ -305,13 +405,20 @@ def main():
 
     # Load checkpoint early to inspect weight shapes (needed for flatten pooling)
     import orbax.checkpoint as ocp
-    checkpoint_path = checkpoint_dir / 'checkpoint'
-    if not checkpoint_path.exists():
-        stage1_path = checkpoint_dir / 'stage1' / 'checkpoint'
-        if stage1_path.exists():
-            checkpoint_path = stage1_path
-        else:
-            raise FileNotFoundError(f"Checkpoint not found at {checkpoint_path} or {stage1_path}")
+    # Handle checkpoint path - user might pass path ending with 'checkpoint' or 'checkpoint/'
+    if checkpoint_dir.name == 'checkpoint':
+        # User passed path ending with 'checkpoint', use it directly
+        checkpoint_path = checkpoint_dir
+    else:
+        # Try standard checkpoint location
+        checkpoint_path = checkpoint_dir / 'checkpoint'
+        if not checkpoint_path.exists():
+            # Try stage1 subdirectory
+            stage1_path = checkpoint_dir / 'stage1' / 'checkpoint'
+            if stage1_path.exists():
+                checkpoint_path = stage1_path
+            else:
+                raise FileNotFoundError(f"Checkpoint not found at {checkpoint_dir / 'checkpoint'} or {stage1_path}")
     
     print(f"\nLoading checkpoint from {checkpoint_path}...")
     checkpointer = ocp.StandardCheckpointer()
@@ -415,62 +522,8 @@ def main():
         device = model._device_context._device
         model._params = jax.device_put(model._params, device)
         model._state = jax.device_put(model._state, device)
-        
-        # Debug: show loaded head parameter shapes
-        print("\nDEBUG - Loaded head parameter keys:")
-        head_keys = [k for k in loaded_params.keys() if 'deepstarr' in k.lower() or k.startswith('head/')]
-        for key in head_keys[:10]:
-            val = loaded_params[key]
-            if hasattr(val, 'shape'):
-                print(f"  {key}: {val.shape}")
-            elif isinstance(val, dict):
-                for subkey, subval in val.items():
-                    if hasattr(subval, 'shape'):
-                        print(f"  {key}/{subkey}: {subval.shape}")
 
     print("✓ Model loaded successfully")
-    
-    # Debug: find ALL deepstarr_head related parameters in the model
-    print("\nDEBUG - Searching for deepstarr_head parameters in model:")
-    def find_deepstarr_keys(d, prefix=''):
-        results = []
-        if isinstance(d, dict):
-            for k, v in d.items():
-                full_key = f"{prefix}/{k}" if prefix else k
-                if 'deepstarr' in str(k).lower():
-                    results.append((full_key, type(v).__name__, getattr(v, 'shape', None)))
-                if isinstance(v, dict):
-                    results.extend(find_deepstarr_keys(v, full_key))
-        return results
-    
-    deepstarr_keys = find_deepstarr_keys(model._params)
-    if deepstarr_keys:
-        for key, type_name, shape in deepstarr_keys:
-            if shape:
-                print(f"  {key}: {shape}")
-            else:
-                print(f"  {key}: ({type_name})")
-    else:
-        print("  WARNING: No deepstarr_head parameters found!")
-    
-    # Also check if there are MULTIPLE paths with deepstarr (this would indicate a problem)
-    flat_keys = [k for k in model._params.keys() if 'deepstarr' in str(k).lower()]
-    nested_keys = find_deepstarr_keys(model._params)
-    print(f"\n  Flat deepstarr keys: {len(flat_keys)}")
-    print(f"  Nested deepstarr keys: {len(nested_keys)}")
-    
-    # Show first few flat keys to help identify structure
-    print(f"  Flat key examples: {flat_keys[:3]}")
-    
-    # Compare a specific parameter value from checkpoint vs model to verify they match
-    if 'head/deepstarr_head/~predict/output' in loaded_params:
-        chkpt_output_b = loaded_params['head/deepstarr_head/~predict/output'].get('b')
-        if chkpt_output_b is not None:
-            print(f"\n  Checkpoint output/b: {np.array(chkpt_output_b)}")
-    if 'head/deepstarr_head/~predict/output' in model._params:
-        model_output_b = model._params['head/deepstarr_head/~predict/output'].get('b')
-        if model_output_b is not None:
-            print(f"  Model output/b: {np.array(model_output_b)}")
     
     # Create test dataset
     print(f"\nLoading test dataset from {args.data_path}...")
@@ -492,14 +545,13 @@ def main():
     )
     print(f"✓ Test dataloader created: {len(test_loader)} batches")
     
-    # Get predictions
-    print("\nRunning inference...")
-    predictions, actuals = get_predictions(model, test_loader, head_name='deepstarr_head')
-    print(f"✓ Inference complete: {len(predictions)} predictions")
+    # Compute metrics using head's loss function (matches training/wandb)
+    print("\nComputing metrics using head's loss function (matching training)...")
+    metrics = compute_metrics_using_head_loss(model, test_loader, head_name='deepstarr_head')
     
-    # Compute metrics
-    print("\nComputing metrics...")
-    metrics = compute_metrics(predictions, actuals)
+    # Also get predictions for saving to CSV
+    print("\nCollecting predictions for saving...")
+    predictions, actuals = get_predictions_for_saving(model, test_loader, head_name='deepstarr_head')
     
     # Print results
     print("\n" + "=" * 80)

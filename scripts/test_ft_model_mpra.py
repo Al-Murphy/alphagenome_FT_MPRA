@@ -56,17 +56,16 @@ from alphagenome_ft import (
     HeadType,
     register_custom_head,
     create_model_with_custom_heads,
-    load_checkpoint,
 )
 from src import EncoderMPRAHead, LentiMPRADataset, MPRADataLoader
 
 
-def get_predictions(
+def get_predictions_for_saving(
     model,
     dataloader: MPRADataLoader,
     head_name: str = 'mpra_head',
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Get predictions and actuals from model on test data.
+    """Get predictions and actuals for saving to CSV.
     
     Args:
         model: CustomAlphaGenomeModel instance
@@ -79,18 +78,90 @@ def get_predictions(
     all_predictions = []
     all_actuals = []
     
-    # Infer pooling settings from the head config to match training.
-    # IMPORTANT: We must exactly mirror EncoderMPRAHead.loss(), which:
-    # - For 'flatten': squeezes the sequence dimension (batch, 1, num_tracks) -> (batch, num_tracks)
-    # - For 'center': takes a single center position
-    # - For 'mean'/'max'/'sum': pools over the ENTIRE sequence dimension
+    # Get pooling type from head config
     head_config = getattr(model, "_head_configs", {}).get(head_name, None)
     if head_config is not None:
         metadata = getattr(head_config, "metadata", {}) or {}
         pooling_type = metadata.get("pooling_type", "sum")
     else:
-        # Fallback to defaults used in training script
         pooling_type = "sum"
+    
+    for batch in dataloader:
+        with model._device_context:
+            predictions = model._predict(
+                model._params,
+                model._state,
+                batch['seq'],
+                batch['organism_index'],
+                negative_strand_mask=jnp.zeros(len(batch['seq']), dtype=bool),
+                strand_reindexing=jax.device_put(
+                    model._metadata[dna_model.Organism.HOMO_SAPIENS].strand_reindexing,
+                    model._device_context._device
+                ),
+            )
+        
+        head_predictions = predictions[head_name]
+        head_np = np.array(head_predictions)
+        seq_len = head_np.shape[1]
+        
+        # Pool exactly like head's loss() method
+        if pooling_type == "flatten":
+            pooled = head_np.squeeze(1)
+        elif pooling_type == "center":
+            center_idx = seq_len // 2
+            pooled = head_np[:, center_idx, :]
+        else:
+            # For mean/max/sum: use center window based on center_bp
+            # Get center_bp from metadata (default 256bp = 2 encoder positions at 128bp resolution)
+            center_bp = metadata.get("center_bp", 256) if metadata else 256
+            center_window_positions = max(1, center_bp // 128)
+            window_size = min(center_window_positions, seq_len)
+            center_start = max((seq_len - window_size) // 2, 0)
+            center_end = center_start + window_size
+            center_preds = head_np[:, center_start:center_end, :]
+            
+            if pooling_type == "mean":
+                pooled = center_preds.mean(axis=1)
+            elif pooling_type == "max":
+                pooled = center_preds.max(axis=1)
+            else:
+                pooled = center_preds.sum(axis=1)
+        
+        if pooled.shape[-1] == 1:
+            pooled = pooled[:, 0]
+        
+        all_predictions.append(pooled)
+        all_actuals.append(np.array(batch['y']))
+    
+    predictions = np.concatenate(all_predictions, axis=0)
+    actuals = np.concatenate(all_actuals, axis=0)
+    
+    return predictions, actuals
+
+
+def compute_metrics_using_head_loss(
+    model,
+    dataloader: MPRADataLoader,
+    head_name: str = 'mpra_head',
+) -> dict:
+    """Compute metrics using the head's loss function for pooling, then compute on all data.
+    
+    This ensures pooling matches training exactly, but computes Pearson correctly
+    on all data at once (not per-batch averaged).
+    
+    Args:
+        model: CustomAlphaGenomeModel instance
+        dataloader: DataLoader for test batches
+        head_name: Name of the custom head
+        
+    Returns:
+        Dictionary with metrics
+    """
+    # Get the loss function from the model to ensure pooling matches
+    loss_fn = model.create_loss_fn_for_head(head_name)
+    
+    all_predictions = []
+    all_actuals = []
     
     print(f"Running inference on {len(dataloader)} batches...")
     
@@ -110,30 +181,48 @@ def get_predictions(
             )
         
         # Get predictions for our head
-        head_predictions = predictions[head_name]  # (B, L_enc, num_tracks)
+        head_predictions = predictions[head_name]
         
-        # Convert to numpy for pooling
+        # Use head's loss function to get pooled predictions (ensures pooling matches training)
+        # We'll extract the pooled predictions from the loss computation
+        loss_batch = {'targets': batch['y']}
+        loss_dict = loss_fn(head_predictions, loss_batch)
+        
+        # Extract pooled predictions by replicating the head's pooling logic
+        # This ensures we get the exact same pooled values as the loss function
+        head_config = getattr(model, "_head_configs", {}).get(head_name, None)
+        if head_config is not None:
+            metadata = getattr(head_config, "metadata", {}) or {}
+            pooling_type = metadata.get("pooling_type", "sum")
+            center_bp = metadata.get("center_bp", 256)
+        else:
+            pooling_type = "sum"
+            center_bp = 256
+        
         head_np = np.array(head_predictions)
         seq_len = head_np.shape[1]
         
-        # Pool EXACTLY like EncoderMPRAHead.loss()
+        # Pool exactly like head's loss() method (with center window for mean/max/sum)
         if pooling_type == "flatten":
-            # In flatten mode, predict() returns (B, 1, num_tracks)
-            pooled = head_np.squeeze(1)  # (B, num_tracks)
+            pooled = head_np.squeeze(1)
         elif pooling_type == "center":
-            # Take only the center position
             center_idx = seq_len // 2
-            pooled = head_np[:, center_idx, :]  # (B, num_tracks)
+            pooled = head_np[:, center_idx, :]
         else:
-            # For mean/max/sum, pool over the ENTIRE sequence dimension
+            # For mean/max/sum: use center window based on center_bp
+            center_window_positions = max(1, center_bp // 128)
+            window_size = min(center_window_positions, seq_len)
+            center_start = max((seq_len - window_size) // 2, 0)
+            center_end = center_start + window_size
+            center_preds = head_np[:, center_start:center_end, :]
+            
             if pooling_type == "mean":
-                pooled = head_np.mean(axis=1)  # (B, num_tracks)
+                pooled = center_preds.mean(axis=1)
             elif pooling_type == "max":
-                pooled = head_np.max(axis=1)
-            else:  # "sum" or fallback
-                pooled = head_np.sum(axis=1)
+                pooled = center_preds.max(axis=1)
+            else:
+                pooled = center_preds.sum(axis=1)
         
-        # Collapse num_tracks if it's 1
         if pooled.shape[-1] == 1:
             pooled = pooled[:, 0]
         
@@ -145,38 +234,21 @@ def get_predictions(
             print(f"  Processed {i + 1}/{len(dataloader)} batches")
     
     # Concatenate all batches
-    predictions = np.concatenate(all_predictions, axis=0)
-    actuals = np.concatenate(all_actuals, axis=0)
+    predictions_all = np.concatenate(all_predictions, axis=0)
+    actuals_all = np.concatenate(all_actuals, axis=0)
     
-    return predictions, actuals
-
-
-def compute_metrics(predictions: np.ndarray, actuals: np.ndarray) -> dict:
-    """Compute evaluation metrics.
-    
-    Args:
-        predictions: Predicted values
-        actuals: Actual values
-        
-    Returns:
-        Dictionary with metrics
-    """
-    # MSE
-    mse = np.mean((predictions - actuals) ** 2)
-    
-    # Pearson correlation
-    pearson = np.corrcoef(predictions.flatten(), actuals.flatten())[0, 1]
-    
-    # R²
-    ss_res = np.sum((actuals - predictions) ** 2)
-    ss_tot = np.sum((actuals - np.mean(actuals)) ** 2)
+    # Compute metrics on ALL data at once (correct way)
+    mse = np.mean((predictions_all.flatten() - actuals_all.flatten()) ** 2)
+    pearson = np.corrcoef(predictions_all.flatten(), actuals_all.flatten())[0, 1]
+    ss_res = np.sum((actuals_all.flatten() - predictions_all.flatten()) ** 2)
+    ss_tot = np.sum((actuals_all.flatten() - np.mean(actuals_all.flatten())) ** 2)
     r2 = 1 - (ss_res / ss_tot)
     
     return {
         'mse': float(mse),
-        'pearson': float(pearson),
+        'pearson': float(pearson),  # Computed on all data (correct)
         'r2': float(r2),
-        'n_samples': len(predictions),
+        'n_samples': len(predictions_all),
     }
 
 
@@ -259,43 +331,72 @@ def main():
         ),
     )
     
-    if save_full_model:
-        # Stage 2 (and any full-model) checkpoints: let alphagenome_ft reconstruct the
-        # exact model + transform that was used during training to avoid Haiku
-        # parameter/topology mismatches.
-        print("\nDetected full-model checkpoint (save_full_model=True).")
-        print("Loading full model with alphagenome_ft.load_checkpoint()...")
-        model = load_checkpoint(
-            checkpoint_dir,
-            base_model_version='all_folds',
-        )
-        print("✓ Full model loaded successfully")
-    else:
-        # Stage 1 (heads-only) checkpoints: match the training-time model creation:
-        # encoder-output head on short MPRA promoter constructs.
-        PROMOTER_CONSTRUCT_LENGTH = 281
-        init_seq_len = PROMOTER_CONSTRUCT_LENGTH
-        print(f"\nDetected heads-only checkpoint. Creating MPRA model with "
-              f"encoder output (init_seq_len={init_seq_len} bp)...")
-        model = create_model_with_custom_heads(
-            'all_folds',
-            custom_heads=['mpra_head'],
-            use_encoder_output=True,
-            init_seq_len=init_seq_len,
-        )
-        
-        # Load checkpoint parameters directly with Orbax into this model
-        import orbax.checkpoint as ocp
-        checkpoint_path = checkpoint_dir / 'checkpoint'
-        if not checkpoint_path.exists():
-            raise FileNotFoundError(f"Checkpoint not found at {checkpoint_path}")
-        
-        print(f"\nLoading checkpoint from {checkpoint_path}...")
-        checkpointer = ocp.StandardCheckpointer()
-        loaded_params, loaded_state = checkpointer.restore(checkpoint_path)
+    # Match the training-time model creation for BOTH Stage 1 (heads-only) and
+    # Stage 2 (full-model) checkpoints: encoder-output head on short MPRA
+    # promoter constructs, with the same init_seq_len used in finetune_mpra.py.
+    PROMOTER_CONSTRUCT_LENGTH = 281
+    init_seq_len = PROMOTER_CONSTRUCT_LENGTH
+    print(f"\nCreating MPRA model with encoder output (init_seq_len={init_seq_len} bp)...")
+    model = create_model_with_custom_heads(
+        'all_folds',
+        custom_heads=['mpra_head'],
+        use_encoder_output=True,
+        init_seq_len=init_seq_len,
+    )
+    
+    # Load checkpoint parameters directly with Orbax into this model
+    import orbax.checkpoint as ocp
+    checkpoint_path = checkpoint_dir / 'checkpoint'
+    if not checkpoint_path.exists():
+        raise FileNotFoundError(f"Checkpoint not found at {checkpoint_path}")
+    
+    print(f"\nLoading checkpoint from {checkpoint_path}...")
+    checkpointer = ocp.StandardCheckpointer()
+    loaded_params, loaded_state = checkpointer.restore(checkpoint_path)
 
-        # Heads-only checkpoint: merge loaded head params into the existing model
-        # while keeping the pretrained backbone parameters from the base model.
+    if save_full_model:
+        # Full-model checkpoint (Stage 2): merge checkpoint params into model structure
+        # to ensure Haiku transform compatibility
+        print("Detected full-model checkpoint (save_full_model=True). "
+              "Merging checkpoint parameters into model structure...")
+        
+        def deep_merge_params(model_params, checkpoint_params):
+            """Recursively merge checkpoint parameters into model parameter structure.
+            
+            This ensures that the Haiku transform structure matches, while replacing
+            all parameter values from the checkpoint.
+            """
+            import copy
+            merged = copy.deepcopy(model_params)
+            
+            if isinstance(checkpoint_params, dict) and isinstance(model_params, dict):
+                for key, checkpoint_value in checkpoint_params.items():
+                    if key in model_params:
+                        # Key exists in both - recurse if both are dicts
+                        if isinstance(model_params[key], dict) and isinstance(checkpoint_value, dict):
+                            merged[key] = deep_merge_params(model_params[key], checkpoint_value)
+                        else:
+                            # Replace with checkpoint value
+                            merged[key] = checkpoint_value
+                    else:
+                        # New key from checkpoint - add it
+                        merged[key] = checkpoint_value
+            else:
+                # Not both dicts - use checkpoint value
+                merged = checkpoint_params
+            
+            return merged
+        
+        model._params = deep_merge_params(model._params, loaded_params)
+        model._state = deep_merge_params(model._state, loaded_state)
+        
+        # Ensure parameters and state are on the correct device
+        device = model._device_context._device
+        model._params = jax.device_put(model._params, device)
+        model._state = jax.device_put(model._state, device)
+    else:
+        # Heads-only checkpoint (Stage 1): merge loaded head params into the
+        # existing model while keeping the pretrained backbone parameters.
         def merge_head_params(model_params, loaded_head_params):
             """Merge loaded head parameters into model parameters.
 
@@ -339,13 +440,15 @@ def main():
 
         model._params = merge_head_params(model._params, loaded_params)
         model._state = merge_head_params(model._state, loaded_state)
+        print("Detected heads-only checkpoint (save_full_model=False). "
+              "Merged head parameters into base model.")
 
-        # Ensure parameters and state are on the correct device
-        device = model._device_context._device
-        model._params = jax.device_put(model._params, device)
-        model._state = jax.device_put(model._state, device)
+    # Ensure parameters and state are on the correct device
+    device = model._device_context._device
+    model._params = jax.device_put(model._params, device)
+    model._state = jax.device_put(model._state, device)
 
-        print("✓ Heads-only checkpoint merged successfully")
+    print("✓ Model loaded successfully")
     
     # Create test dataset
     print(f"\nLoading test dataset (cell_type={args.cell_type})...")
@@ -366,14 +469,13 @@ def main():
     )
     print(f"✓ Test dataloader created: {len(test_loader)} batches")
     
-    # Get predictions
-    print("\nRunning inference...")
-    predictions, actuals = get_predictions(model, test_loader, head_name='mpra_head')
-    print(f"✓ Inference complete: {len(predictions)} predictions")
+    # Compute metrics using head's loss function (matches training/wandb)
+    print("\nComputing metrics using head's loss function (matching training)...")
+    metrics = compute_metrics_using_head_loss(model, test_loader, head_name='mpra_head')
     
-    # Compute metrics
-    print("\nComputing metrics...")
-    metrics = compute_metrics(predictions, actuals)
+    # Also get predictions for saving to CSV
+    print("\nCollecting predictions for saving...")
+    predictions, actuals = get_predictions_for_saving(model, test_loader, head_name='mpra_head')
     
     # Print results
     print("\n" + "=" * 80)

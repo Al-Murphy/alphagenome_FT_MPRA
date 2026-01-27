@@ -406,10 +406,18 @@ class EncoderMPRAHead(CustomHead):
             pred_values = center_predictions.squeeze(1)  # (batch, num_tracks)
         else:
             # For center window pooling (mean/max/sum)
-            # For cached embeddings, sequences should all have same length
-            # Just pool over the entire sequence (no windowing for cached case)
-            # This is fine because the encoder output is already much shorter than original sequence
-            center_predictions = predictions
+            # Extract center window based on center_bp (converted to encoder positions)
+            window_size = jnp.minimum(self._center_window_positions, seq_len)
+            center_start = (seq_len - window_size) // 2
+            center_start = jnp.maximum(center_start, 0)
+            
+            # Extract center window using dynamic_slice for JIT compatibility
+            center_predictions = jax.lax.dynamic_slice_in_dim(
+                predictions,
+                start_index=center_start,
+                slice_size=window_size,
+                axis=1
+            )
             
             # Pool to get scalar per batch
             if self._pooling_type == 'mean':
@@ -578,8 +586,19 @@ class DeepSTARRHead(CustomHead):
             )
             pred_values = center_predictions.squeeze(1)  # (batch, 2)
         else:
-            # Pool over sequence
-            center_predictions = predictions
+            # For center window pooling (mean/max/sum)
+            # Extract center window based on center_bp (converted to encoder positions)
+            window_size = jnp.minimum(self._center_window_positions, seq_len)
+            center_start = (seq_len - window_size) // 2
+            center_start = jnp.maximum(center_start, 0)
+            
+            # Extract center window using dynamic_slice for JIT compatibility
+            center_predictions = jax.lax.dynamic_slice_in_dim(
+                predictions,
+                start_index=center_start,
+                slice_size=window_size,
+                axis=1
+            )
             
             if self._pooling_type == 'mean':
                 pred_values = jnp.mean(center_predictions, axis=1)
