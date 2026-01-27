@@ -2,6 +2,10 @@
 Finetune AlphaGenome with DeepSTARR head on DeepSTARR dataset from
 [de Almeida et al., 2022](https://www.nature.com/articles/s41588-022-01048-5)
 
+Compare performance against DeepSTARR (PCC Developmental enhancers - 0.700985656, PCC Housekeeping enhancers - 0.754766426)
+and Dream-RNN (PCC Developmental enhancers - 0.739854584, PCC Housekeeping enhancers - 0.790806568)
+Values taken from Fig.3A (median of fold perf) [A community effort to optimize sequence-based deep learning models of gene regulation](https://www.nature.com/articles/s41587-024-02414-w)
+
 DeepSTARR predicts two types of enhancer activity:
 - Developmental enhancer activity (Dev_log2_enrichment)
 - Housekeeping enhancer activity (Hk_log2_enrichment)
@@ -106,14 +110,14 @@ def main():
     parser.add_argument(
         '--random_shift',
         action='store_true',
-        default=True,
-        help='Apply random shifts to training data (augmentation)'
+        default=False,
+        help='Apply random shifts to training data (augmentation) - NOTE doesnt make sense for StarrSeq data as we arent generating the full promoter construct'
     )
     parser.add_argument(
         '--random_shift_likelihood',
         type=float,
         default=0.5,
-        help='Likelihood of applying random shifts to training data'
+        help='Likelihood of applying random shifts to training data - NOTE doesnt make sense for StarrSeq data as we arent generating the full promoter construct'
     )
     parser.add_argument(
         '--max_shift',
@@ -133,12 +137,12 @@ def main():
         '--center_bp',
         type=int,
         default=256,
-        help='Number of base pairs to pool from center (256=2 positions, 384=3 positions)'
+        help='Number of base pairs to pool from center (256=2 positions)'
     )
     parser.add_argument(
         '--pooling_type',
         type=str,
-        default='sum',
+        default='flatten',
         choices=['mean', 'sum', 'max', 'center', 'flatten'],
         help='Pooling type for head: sum/mean/max (pool center window), center (single position), flatten (all positions)'
     )
@@ -150,13 +154,13 @@ def main():
     parser.add_argument(
         '--nl_size',
         type=str,
-        default='1024',
+        default='512,512',
         help='Hidden layer sizes: single int (e.g., "1024") or comma-separated list (e.g., "512,256") for multiple layers'
     )
     parser.add_argument(
         '--do',
         type=float,
-        default=None,
+        default=0.5,
         help='Dropout rate for the MLP - None means no dropout'
     )
     parser.add_argument(
@@ -256,20 +260,20 @@ def main():
     parser.add_argument(
         '--early_stopping_patience',
         type=int,
-        default=5,
+        default=1,
         help='Number of epochs without improvement before early stopping'
     )
     parser.add_argument(
         '--val_eval_frequency',
         type=int,
-        default=4,
-        help='Number of times to evaluate on validation set per epoch (default: 4)'
+        default=20,
+        help='Number of times to evaluate on validation set per epoch (default: 20)'
     )
     parser.add_argument(
         '--test_eval_frequency',
         type=int,
-        default=4,
-        help='Number of times to evaluate on test set per epoch (default: 4)'
+        default=20,
+        help='Number of times to evaluate on test set per epoch (default: 20)'
     )
     parser.add_argument(
         '--second_stage_lr',
@@ -376,12 +380,35 @@ def main():
     )
     print("✓ Custom head registered")
     
+    # For flatten pooling with cached embeddings, we need to know the embedding length
+    # BEFORE initializing the model (to set correct weight matrix sizes)
+    # For non-cached mode with flatten, use the actual sequence length (249bp for DeepSTARR)
+    init_seq_len = None
+    if args.pooling_type == 'flatten':
+        if args.use_cached_embeddings:
+            import pickle
+            print(f"\nLoading cache header to get embedding dimensions for flatten pooling...")
+            with open(args.cache_file, 'rb') as f:
+                cache_data = pickle.load(f)
+            # Get max embedding length from cache
+            sample_embedding = next(iter(cache_data.values()))
+            max_emb_len = sample_embedding.shape[0]  # encoder positions
+            # Convert to sequence length (encoder has 128bp resolution)
+            init_seq_len = max_emb_len * 128
+            print(f"  Embedding length: {max_emb_len} positions → init_seq_len={init_seq_len} bp")
+            del cache_data  # Free memory
+        else:
+            # For non-cached mode, use the actual sequence length (249bp for DeepSTARR)
+            init_seq_len = 249
+            print(f"\nUsing flatten pooling with sequence length: {init_seq_len} bp")
+    
     # Create model
     print("\nCreating model with custom heads...")
     model_with_custom = create_model_with_custom_heads(
         'all_folds',
         custom_heads=['deepstarr_head'],
-        use_encoder_output=True
+        use_encoder_output=True,
+        init_seq_len=init_seq_len
     )
     print("✓ Model created")
     
@@ -440,7 +467,7 @@ def main():
             model=model_with_custom,
             path_to_data=args.data_path,
             split='val',
-            organism=dna_model.Organism.DROSOPHILA_MELANOGASTER,
+            organism=dna_model.Organism.HOMO_SAPIENS, #dna_model.Organism.DROSOPHILA_MELANOGASTER,
             random_shift=False,
             reverse_complement=False,
             use_cached_embeddings=args.use_cached_embeddings,
@@ -451,7 +478,7 @@ def main():
         model=model_with_custom,
         path_to_data=args.data_path,
         split='test',
-        organism=dna_model.Organism.DROSOPHILA_MELANOGASTER,
+        organism=dna_model.Organism.HOMO_SAPIENS, #dna_model.Organism.DROSOPHILA_MELANOGASTER,
         random_shift=False,
         reverse_complement=False,
         use_cached_embeddings=args.use_cached_embeddings,
@@ -508,6 +535,7 @@ def main():
         train_loader,
         val_loader,
         test_loader,
+        head_name='deepstarr_head',
         num_epochs=args.num_epochs,
         learning_rate=args.learning_rate,
         checkpoint_dir=str(checkpoint_path),

@@ -87,6 +87,8 @@ from alphagenome_ft import (
 from src import EncoderMPRAHead, LentiMPRADataset, MPRADataLoader, train
 
 
+PROMOTER_CONSTRUCT_LENGTH = 281
+
 def main():
     parser = argparse.ArgumentParser(
         description='Finetune AlphaGenome with MPRA head on LentiMPRA dataset',
@@ -138,6 +140,12 @@ def main():
         default='sum',
         choices=['mean', 'sum', 'max', 'center', 'flatten'],
         help='Pooling type for MPRA head: sum/mean/max (pool center window), center (single position), flatten (all positions)'
+    )
+    parser.add_argument(
+        '--pad_n_bases',
+        type=int,
+        default=0,
+        help='Number of bases to pad on each side of the sequence'
     )
     parser.add_argument(
         '--no_freeze_backbone',
@@ -274,7 +282,13 @@ def main():
         default=None,
         help='Learning rate for Stage 2 (unfreeze encoder). If provided, enables two-stage training: '
              'Stage 1 trains head only, then loads best checkpoint, unfreezes encoder, and continues '
-             'training for num_epochs//2 epochs with this learning rate.'
+             'training for second_stage_epochs with this learning rate.'
+    )
+    parser.add_argument(
+        '--second_stage_epochs',
+        type=int,
+        default=50,
+        help='Number of epochs for Stage 2 training (default: 50). Only used when second_stage_lr is provided.'
     )
     parser.add_argument(
         '--resume_from_stage2',
@@ -330,8 +344,8 @@ def main():
             print(f"Resume from Stage 2:        Yes (skipping Stage 1)")
         else:
             print(f"Stage 1 epochs:             {args.num_epochs}")
-        print(f"Stage 2 epochs:              {args.num_epochs // 2}")
-        print(f"Stage 2 learning rate:       {args.second_stage_lr}")
+        print(f"Stage 2 epochs:             {args.second_stage_epochs}")
+        print(f"Stage 2 learning rate:      {args.second_stage_lr}")
     else:
         print(f"Two-stage training:         Disabled")
     print(f"Checkpoint path:            {checkpoint_path}")
@@ -373,12 +387,35 @@ def main():
     )
     print("✓ Custom head registered")
     
+    # For flatten pooling with cached embeddings, we need to know the embedding length
+    # BEFORE initializing the model (to set correct weight matrix sizes)
+    init_seq_len = None
+    if args.use_cached_embeddings and args.pooling_type == 'flatten':
+        import pickle
+        print(f"\nLoading cache header to get embedding dimensions for flatten pooling...")
+        with open(args.cache_file, 'rb') as f:
+            cache_data = pickle.load(f)
+        # Get max embedding length from cache
+        sample_embedding = next(iter(cache_data.values()))
+        max_emb_len = sample_embedding.shape[0]  # encoder positions
+        # Convert to sequence length (encoder has 128bp resolution)
+        init_seq_len = max_emb_len * 128
+        print(f"  Embedding length: {max_emb_len} positions → init_seq_len={init_seq_len} bp")
+        del cache_data  # Free memory
+        
+    if not args.use_cached_embeddings:
+        init_seq_len = PROMOTER_CONSTRUCT_LENGTH #full promoter construct length
+        if args.pad_n_bases > 0:
+            init_seq_len += args.pad_n_bases
+        print(f"\nUsing sequence length: {init_seq_len} bp")
+    
     # Create model
     print("\nCreating model with custom heads...")
     model_with_custom = create_model_with_custom_heads(
         'all_folds',
         custom_heads=['mpra_head'],
-        use_encoder_output=True
+        use_encoder_output=True,
+        init_seq_len=init_seq_len
     )
     print("✓ Model created")
     
@@ -415,6 +452,7 @@ def main():
         reverse_complement=args.reverse_complement if not args.use_cached_embeddings else False,
         use_cached_embeddings=args.use_cached_embeddings,
         cache_file=args.cache_file if args.use_cached_embeddings else None,
+        pad_n_bases=args.pad_n_bases
     )
     # Determine cache files for val and test splits
     val_cache_file = None
@@ -436,9 +474,10 @@ def main():
             cell_type=args.cell_type,
             split='val',
             random_shift=False,
-                reverse_complement=False,
-                use_cached_embeddings=args.use_cached_embeddings,
-                cache_file=val_cache_file,
+            reverse_complement=False,
+            use_cached_embeddings=args.use_cached_embeddings,
+            cache_file=val_cache_file,
+            pad_n_bases=args.pad_n_bases
         )
     
     test_dataset = LentiMPRADataset(
@@ -449,13 +488,14 @@ def main():
         reverse_complement=False,
         use_cached_embeddings=args.use_cached_embeddings,
         cache_file=test_cache_file,
+        pad_n_bases=args.pad_n_bases
     )
     print(f"✓ Train dataset: {len(train_dataset)} samples")
     if val_dataset:
         print(f"✓ Val dataset:   {len(val_dataset)} samples")
     else:
         print(f"✓ Val dataset:   None (no_val_split=True)")
-        print(f"✓ Test dataset:   {len(test_dataset)} samples")
+    print(f"✓ Test dataset:  {len(test_dataset)} samples")
     
     # Create dataloaders
     print("\nCreating dataloaders...")
@@ -475,8 +515,11 @@ def main():
         shuffle=False
     )
     print(f"✓ Train batches: {len(train_loader)}")
-    print(f"✓ Val batches:   {len(val_loader)}")
-    print(f"✓ Test batches:   {len(test_loader)}")
+    if val_loader is not None:
+        print(f"✓ Val batches:   {len(val_loader)}")
+    else:
+        print(f"✓ Val batches:   None (no validation split)")
+    print(f"✓ Test batches:  {len(test_loader)}")
     
     # Train model
     print("\n" + "=" * 80)
@@ -511,6 +554,7 @@ def main():
         val_eval_frequency=args.val_eval_frequency,
         test_eval_frequency=args.test_eval_frequency,
         second_stage_lr=args.second_stage_lr,
+        second_stage_epochs=args.second_stage_epochs,
         resume_from_stage2=args.resume_from_stage2,
         use_wandb=not args.no_wandb,
         wandb_project=args.wandb_project,

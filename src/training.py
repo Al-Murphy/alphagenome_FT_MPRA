@@ -144,7 +144,11 @@ def train_epoch(
     if use_cached_embeddings:
         _, grad_fn = _create_head_only_functions(model, head_name, loss_fn)
     
-    for batch in dataloader:
+    for batch_idx, batch in enumerate(dataloader):
+        # Print progress indicator for first batch (JIT compilation can be slow)
+        if batch_idx == 0:
+            print(f"Processing first batch (JIT compilation - this may take 5-30 minutes)...", flush=True)
+        
         rng_key, subkey = jax.random.split(rng_key)
         
         # Check if using cached embeddings
@@ -539,6 +543,8 @@ def _train_stage(
     stage_name: str = "Stage 1",
     start_epoch: int = 0,
     use_cached_embeddings: bool = False,
+    lr_scheduler: str | None = None,
+    optimizer_factory: Any = None,
 ) -> tuple[dict, Any, jax.Array, int, float]:
     """Train a single stage of training.
     
@@ -557,8 +563,16 @@ def _train_stage(
     
     # Early stopping and checkpointing variables
     best_val_loss = float('inf')
-    epochs_without_improvement = 0
+    evals_without_improvement = 0  # Track evaluations, not epochs
     best_epoch = start_epoch
+    best_eval_point = 0  # Track which evaluation point had the best model
+    
+    # Plateau scheduler variables (for ReduceLROnPlateau)
+    plateau_patience = 5  # Number of epochs to wait before reducing LR
+    plateau_factor = 0.5  # Factor to reduce LR by
+    plateau_best_val_loss = float('inf')
+    plateau_epochs_without_improvement = 0
+    current_lr = learning_rate
     
     # Step counter for WandB logging (tracks training steps, not epochs)
     global_step = start_epoch * len(train_loader) if start_epoch > 0 else 0
@@ -580,6 +594,8 @@ def _train_stage(
     if checkpoint_dir:
         save_type = "full model" if save_full_model else "head only"
         print(f"Checkpoint directory: {checkpoint_dir} (saving {save_type})")
+        if val_loader and val_eval_frequency > 1:
+            print(f"  Checkpoints saved at each validation evaluation ({val_eval_frequency}x per epoch)")
     print(f"{'=' * 80}\n")
     
     # Get cached gradient function if using embeddings (created once, reused)
@@ -587,7 +603,57 @@ def _train_stage(
     if use_cached_embeddings:
         _, cached_grad_fn = _create_head_only_functions(model, head_name, loss_fn)
     
+    # For non-cached embeddings mode, create gradient function that works with model._predict
+    seq_grad_fn = None
+    if not use_cached_embeddings:
+        print("Setting up gradient function for sequence mode...", flush=True)
+        # Get strand reindexing once
+        strand_reindex = jax.device_put(
+            model._metadata[dna_model.Organism.HOMO_SAPIENS].strand_reindexing,
+            model._device_context._device
+        )
+        frozen_state = model._state  # Capture state once
+        
+        # Define loss function ONCE (this will be traced once per unique input shape)
+        def _seq_loss_fn(params, seq_batch, organism_index, targets):
+            """Loss function for sequence mode."""
+            with model._device_context:
+                predictions = model._predict(
+                    params, frozen_state, seq_batch, organism_index,
+                    negative_strand_mask=jnp.zeros(seq_batch.shape[0], dtype=bool),
+                    strand_reindexing=strand_reindex,
+                )
+            head_predictions = predictions[head_name]
+            loss_batch = {'targets': targets}
+            loss_dict = loss_fn(head_predictions, loss_batch)
+            return loss_dict['loss'], loss_dict
+        
+        # Create gradient function ONCE (not per batch!)
+        _grad_fn = jax.value_and_grad(_seq_loss_fn, has_aux=True)
+        
+        def _compute_grads(params, seq_batch, organism_index, targets):
+            """Wrapper that returns (grads, loss, loss_dict)."""
+            (loss, loss_dict), grads = _grad_fn(params, seq_batch, organism_index, targets)
+            return grads, loss, loss_dict
+        
+        seq_grad_fn = _compute_grads
+        print("✓ Gradient function ready", flush=True)
+        
+        # Warmup: run forward+backward with ACTUAL batch size to trigger JAX tracing
+        # (JAX re-traces for different input shapes, so we need to use real batch size)
+        print("Warming up model (first forward+backward pass with full batch)...", flush=True)
+        print("  This may take several minutes for JAX to trace the computation graph...", flush=True)
+        warmup_batch = next(iter(train_loader))
+        warmup_seq = warmup_batch['seq']
+        warmup_org = warmup_batch['organism_index']
+        warmup_y = warmup_batch['y']
+        print(f"  Warmup batch shape: {warmup_seq.shape}", flush=True)
+        # Run actual gradient computation to trigger tracing
+        _ = seq_grad_fn(model._params, warmup_seq, warmup_org, warmup_y)
+        print("✓ Model warmed up", flush=True)
+    
     for epoch in range(num_epochs):
+        
         # Track metrics for this epoch
         epoch_val_losses = []
         epoch_val_pearsons = []
@@ -655,29 +721,17 @@ def _train_stage(
                         )
                     pearson = loss_dict.get('pearson_corr', 0.0)
                 else:
-                    mini_batch = {
-                        'seq': batch['seq'][mini_batch_start:mini_batch_end],
-                        'y': batch['y'][mini_batch_start:mini_batch_end],
-                        'organism_index': batch['organism_index'][mini_batch_start:mini_batch_end],
-                    }
+                    # Use pre-compiled gradient function (created once per stage, not per batch!)
+                    seq_batch = batch['seq'][mini_batch_start:mini_batch_end]
+                    targets = batch['y'][mini_batch_start:mini_batch_end]
+                    organism_index = batch['organism_index'][mini_batch_start:mini_batch_end]
                     
-                    def loss_fn_inner(params):
-                        with model._device_context:
-                            predictions = model._predict(
-                                params, model._state, mini_batch['seq'], mini_batch['organism_index'],
-                                negative_strand_mask=jnp.zeros(len(mini_batch['seq']), dtype=bool),
-                                strand_reindexing=jax.device_put(
-                                    model._metadata[dna_model.Organism.HOMO_SAPIENS].strand_reindexing,
-                                    model._device_context._device
-                                ),
-                            )
-                        head_predictions = predictions[head_name]
-                        loss_batch = {'targets': mini_batch['y']}
-                        loss_dict = loss_fn(head_predictions, loss_batch)
-                        return loss_dict['loss'], loss_dict
-                    
-                    grad_fn = jax.value_and_grad(loss_fn_inner, has_aux=True)
-                    (loss, loss_dict), grads = grad_fn(model._params)
+                    grads, loss, loss_dict = seq_grad_fn(
+                        model._params,
+                        seq_batch,
+                        organism_index,
+                        targets
+                    )
                     pearson = loss_dict.get('pearson_corr', 0.0)
                 
                 if accumulated_grads is None:
@@ -723,11 +777,13 @@ def _train_stage(
                 epoch_val_losses.append(val_metrics['val_loss'])
                 epoch_val_pearsons.append(val_metrics['val_pearson'])
                 
+                current_epoch_frac = start_epoch + epoch + (batch_idx / len(train_loader))
+                
                 # Log to WandB immediately at evaluation point
                 if use_wandb:
                     log_dict = {
                         'step': global_step,
-                        'epoch': start_epoch + epoch + (batch_idx / len(train_loader)),  # Fractional epoch
+                        'epoch': current_epoch_frac,
                         'stage': stage_name,
                         'val_loss': val_metrics['val_loss'],
                         'val_pearson': val_metrics['val_pearson'],
@@ -742,6 +798,38 @@ def _train_stage(
                     if train_pearsons:
                         log_dict['train_pearson'] = sum(train_pearsons) / len(train_pearsons)
                     wandb.log(log_dict)
+                
+                # Checkpoint and early stopping at each validation evaluation point
+                current_val_loss = val_metrics['val_loss']
+                
+                if current_val_loss < best_val_loss:
+                    best_val_loss = current_val_loss
+                    best_epoch = start_epoch + epoch + 1
+                    best_eval_point = batch_idx
+                    evals_without_improvement = 0
+                    
+                    # Save checkpoint immediately when we find a better model
+                    if checkpoint_dir:
+                        save_type = "full model" if save_full_model else "head only"
+                        print(f"  → New best model at epoch {current_epoch_frac:.2f}! "
+                              f"Saving checkpoint ({save_type}, val_loss: {best_val_loss:.6f})...")
+                        model.save_checkpoint(
+                            checkpoint_dir,
+                            save_full_model=save_full_model
+                        )
+                    else:
+                        print(f"  → New best model at epoch {current_epoch_frac:.2f}! (val_loss: {best_val_loss:.6f})")
+                else:
+                    evals_without_improvement += 1
+                
+                # Early stopping check based on number of evaluations without improvement
+                # Convert early_stopping_patience from epochs to evaluations
+                evals_per_epoch = val_eval_frequency
+                patience_in_evals = early_stopping_patience * evals_per_epoch
+                if evals_without_improvement >= patience_in_evals:
+                    print(f"\nEarly stopping triggered after {evals_without_improvement} evaluations without improvement!")
+                    print(f"Best validation loss: {best_val_loss:.6f} at epoch {best_epoch}")
+                    return history, optimizer_state, rng_key, best_epoch, best_val_loss
             
             # Evaluate test at specified intervals
             if test_loader and batch_idx in test_eval_points:
@@ -839,34 +927,53 @@ def _train_stage(
                         log_dict[key] = value
             wandb.log(log_dict)
         
-        # Checkpoint and early stopping logic (only if validation set is provided)
+        # Plateau scheduler logic (checkpoint and early stopping now handled at evaluation level)
         if val_metrics:
             current_val_loss = val_metrics['val_loss']
             
-            # Check if this is the best model so far
-            if current_val_loss < best_val_loss:
-                best_val_loss = current_val_loss
-                best_epoch = current_epoch
-                epochs_without_improvement = 0
-                
-                # Save checkpoint if directory is provided
-                if checkpoint_dir:
-                    save_type = "full model" if save_full_model else "head only"
-                    print(f"  → New best model! Saving checkpoint ({save_type}, val_loss: {best_val_loss:.6f})...")
-                    model.save_checkpoint(
-                        checkpoint_dir,
-                        save_full_model=save_full_model
-                    )
+            # Plateau scheduler: reduce LR when validation loss plateaus
+            if lr_scheduler == 'plateau' and optimizer_factory is not None:
+                # Check if validation loss has improved for plateau detection
+                if current_val_loss < plateau_best_val_loss:
+                    plateau_best_val_loss = current_val_loss
+                    plateau_epochs_without_improvement = 0
                 else:
-                    print(f"  → New best model! (val_loss: {best_val_loss:.6f})")
-            else:
-                epochs_without_improvement += 1
-                
-                # Early stopping check
-                if epochs_without_improvement >= early_stopping_patience:
-                    print(f"\nEarly stopping triggered after {current_epoch} epochs!")
-                    print(f"Best validation loss: {best_val_loss:.6f} at epoch {best_epoch}")
-                    break
+                    plateau_epochs_without_improvement += 1
+                    
+                    # Reduce LR if plateau patience exceeded
+                    if plateau_epochs_without_improvement >= plateau_patience:
+                        old_lr = current_lr
+                        current_lr = current_lr * plateau_factor
+                        print(f"  → Plateau detected! Reducing learning rate: {old_lr:.2e} → {current_lr:.2e}")
+                        
+                        # Recreate optimizer with new learning rate
+                        optimizer = optimizer_factory(current_lr)
+                        optimizer_state = optimizer.init(model._params)
+                        opt_update = optimizer.update
+                        
+                        # Reset plateau counter
+                        plateau_epochs_without_improvement = 0
+                        
+                        # Log LR change to wandb
+                        if use_wandb:
+                            wandb.log({
+                                'learning_rate': current_lr,
+                                'epoch': current_epoch,
+                                'step': global_step,
+                            })
+        
+        # If no validation loader, save checkpoint at end of each epoch based on training loss
+        if not val_loader and checkpoint_dir:
+            current_train_loss = train_metrics['loss']
+            if current_train_loss < best_val_loss:  # Reusing best_val_loss for train loss tracking
+                best_val_loss = current_train_loss
+                best_epoch = current_epoch
+                save_type = "full model" if save_full_model else "head only"
+                print(f"  → New best training loss! Saving checkpoint ({save_type}, train_loss: {best_val_loss:.6f})...")
+                model.save_checkpoint(
+                    checkpoint_dir,
+                    save_full_model=save_full_model
+                )
     
     return history, optimizer_state, rng_key, best_epoch, best_val_loss
 
@@ -891,6 +998,7 @@ def train(
     val_eval_frequency: int = 1,
     test_eval_frequency: int = 1,
     second_stage_lr: float | None = None,
+    second_stage_epochs: int = 50,
     resume_from_stage2: bool = False,
     gradient_clip: float | None = None,
     use_cached_embeddings: bool = False,
@@ -908,7 +1016,7 @@ def train(
         train_loader: DataLoader for training
         val_loader: Optional DataLoader for validation
         test_loader: Optional DataLoader for test
-        num_epochs: Number of training epochs for Stage 1. Stage 2 uses half this many.
+        num_epochs: Number of training epochs for Stage 1.
         learning_rate: Learning rate for Stage 1 optimizer
         head_name: Name of the custom head to train
         rng_key: Random key for training
@@ -936,7 +1044,9 @@ def train(
             Default is 1 (evaluate once at end of epoch). Set to N to evaluate N times.
         second_stage_lr: If provided, enables two-stage training. After Stage 1 completes,
             loads best checkpoint, unfreezes encoder, and continues training with this
-            learning rate for num_epochs//2 epochs.
+            learning rate for second_stage_epochs.
+        second_stage_epochs: Number of epochs for Stage 2 training. Default is 50. Only used
+            when second_stage_lr is provided.
         resume_from_stage2: If True, skip Stage 1 training and resume directly from Stage 2.
             Requires checkpoint_dir to contain a Stage 1 checkpoint. second_stage_lr must be provided.
             Default is False.
@@ -964,8 +1074,8 @@ def train(
     
     # Determine if two-stage training
     enable_second_stage = second_stage_lr is not None
-    stage1_epochs = (num_epochs // 4) * 1 if enable_second_stage else num_epochs
-    stage2_epochs = (num_epochs // 4) * 3 if enable_second_stage else 0
+    stage1_epochs = num_epochs  # Stage 1 always runs for num_epochs
+    stage2_epochs = second_stage_epochs if enable_second_stage else 0
     
     # Initialize wandb
     if use_wandb:
@@ -1019,13 +1129,10 @@ def train(
                 end_value=base_lr * 0.01
             )
         elif lr_scheduler == 'plateau':
-            # Reduce LR by 0.5 at 50% and 75% of training
-            boundaries = [int(0.5 * total_steps), int(0.75 * total_steps)]
-            values = [base_lr, base_lr * 0.5, base_lr * 0.25]
-            return optax.piecewise_constant_schedule(
-                init_value=values[0],
-                boundaries_and_scales={b: v/values[i] for i, (b, v) in enumerate(zip(boundaries, values[1:]))}
-            )
+            # Plateau scheduler: reduce LR when validation loss plateaus
+            # This returns constant LR - actual reduction happens in training loop
+            # based on validation loss monitoring (see _train_stage)
+            return base_lr
         else:
             print(f"Warning: Unknown lr_scheduler '{lr_scheduler}', using constant LR")
             return base_lr
@@ -1149,6 +1256,8 @@ def train(
             stage_name="Stage 1 (Frozen Backbone)",
             start_epoch=0,
             use_cached_embeddings=use_cached_embeddings,
+            lr_scheduler=lr_scheduler,
+            optimizer_factory=create_optimizer,
         )
         
         # Merge Stage 1 history
@@ -1315,6 +1424,8 @@ def train(
             stage_name="Stage 2 (Unfrozen Encoder)",
             start_epoch=stage1_best_epoch,
             use_cached_embeddings=False,  # Stage 2 trains encoder, so can't use cached embeddings
+            lr_scheduler=lr_scheduler,
+            optimizer_factory=create_optimizer,
         )
         
         # Merge Stage 2 history
@@ -1355,11 +1466,14 @@ def train(
         final_test_loss = history['test_loss'][-1]
         final_test_pearson = history['test_pearson'][-1]
         
+        # Determine training mode (stage1 or stage2)
+        training_mode = 'stage2' if second_stage_lr is not None else 'stage1'
+        
         # Write results
         file_exists = results_file.exists()
         with open(results_file, 'a', newline='') as f:
             writer = csv.DictWriter(f, fieldnames=[
-                'run_name', 'cell_type', 'best_test_loss', 'best_test_pearson', 
+                'run_name', 'cell_type', 'training_mode', 'best_test_loss', 'best_test_pearson', 
                 'best_test_epoch', 'final_test_loss', 'final_test_pearson'
             ])
             if not file_exists:
@@ -1367,6 +1481,7 @@ def train(
             writer.writerow({
                 'run_name': wandb_name if wandb_name else 'unnamed',
                 'cell_type': wandb_config.get('cell_type', 'unknown') if wandb_config else 'unknown',
+                'training_mode': training_mode,
                 'best_test_loss': f'{best_test_loss:.6f}',
                 'best_test_pearson': f'{best_test_pearson:.4f}',
                 'best_test_epoch': best_test_epoch,

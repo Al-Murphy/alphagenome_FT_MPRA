@@ -159,7 +159,11 @@ class LentiMPRADataset:
         
         # Update data length to match what we actually have
         self._cached_len = len(self._embeddings_by_idx)
+        
+        # Compute max embedding length for consistent padding (important for flatten pooling)
+        self._max_embedding_length = max(emb.shape[0] for emb in self._embeddings_by_idx)
         print(f"✓ Built fast index lookup for {self._cached_len} samples")
+        print(f"✓ Max embedding length: {self._max_embedding_length} positions")
         
     def __len__(self):
         # Return total number of samples
@@ -335,8 +339,14 @@ class MPRADataLoader:
         if "encoder_output" in samples[0]:
             # Stack cached encoder embeddings
             encoder_outputs = [s["encoder_output"] for s in samples]
-            # Handle variable length by padding or using max length
-            max_len = max(e.shape[0] for e in encoder_outputs)
+            
+            # Use global max length if available (for flatten pooling consistency)
+            # Otherwise use batch max length
+            if hasattr(self.dataset, '_max_embedding_length'):
+                max_len = self.dataset._max_embedding_length
+            else:
+                max_len = max(e.shape[0] for e in encoder_outputs)
+            
             max_feat = encoder_outputs[0].shape[1]  # Feature dimension
             
             padded_embeddings = []
@@ -426,7 +436,7 @@ class DeepSTARRDataset:
             model: AlphaGenome model (for one-hot encoding)
             path_to_data: Path to deepstarr data directory
             split: One of 'train', 'val', or 'test'
-            organism: Organism (should be DROSOPHILA_MELANOGASTER for DeepSTARR)
+            organism: Organism (DeepSTARR was mouse so used HOMO_SAPIENS for now, could test mus musculus later)
             random_shift: Apply random shifts to sequences (augmentation)
             random_shift_likelihood: Probability of applying random shift
             max_shift: Maximum shift amount in base pairs
@@ -563,7 +573,11 @@ class DeepSTARRDataset:
             print(f"  Warning: {missing_count} sequences not found in cache")
         
         self._cached_len = len(self._embeddings_by_idx)
+        
+        # Compute max embedding length for consistent padding (important for flatten pooling)
+        self._max_embedding_length = max(emb.shape[0] for emb in self._embeddings_by_idx)
         print(f"✓ Built fast index lookup for {self._cached_len} samples")
+        print(f"✓ Max embedding length: {self._max_embedding_length} positions")
     
     def __len__(self):
         if self.use_cached_embeddings and hasattr(self, '_cached_len'):
@@ -695,7 +709,13 @@ class STARRSeqDataLoader:
         if "encoder_output" in samples[0]:
             # Cached embeddings mode
             encoder_outputs = [s["encoder_output"] for s in samples]
-            max_len = max(e.shape[0] for e in encoder_outputs)
+            
+            # Use global max length if available (for flatten pooling consistency)
+            if hasattr(self.dataset, '_max_embedding_length'):
+                max_len = self.dataset._max_embedding_length
+            else:
+                max_len = max(e.shape[0] for e in encoder_outputs)
+            
             max_feat = encoder_outputs[0].shape[1]
             
             padded_embeddings = []

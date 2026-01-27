@@ -56,6 +56,7 @@ from alphagenome_ft import (
     HeadType,
     register_custom_head,
     create_model_with_custom_heads,
+    load_checkpoint,
 )
 from src import EncoderMPRAHead, LentiMPRADataset, MPRADataLoader
 
@@ -78,18 +79,18 @@ def get_predictions(
     all_predictions = []
     all_actuals = []
     
-    # Infer pooling settings from the head config to match training
+    # Infer pooling settings from the head config to match training.
+    # IMPORTANT: We must exactly mirror EncoderMPRAHead.loss(), which:
+    # - For 'flatten': squeezes the sequence dimension (batch, 1, num_tracks) -> (batch, num_tracks)
+    # - For 'center': takes a single center position
+    # - For 'mean'/'max'/'sum': pools over the ENTIRE sequence dimension
     head_config = getattr(model, "_head_configs", {}).get(head_name, None)
     if head_config is not None:
         metadata = getattr(head_config, "metadata", {}) or {}
-        center_bp = metadata.get("center_bp", 256)
         pooling_type = metadata.get("pooling_type", "sum")
     else:
         # Fallback to defaults used in training script
-        center_bp = 256
         pooling_type = "sum"
-    # Convert center_bp (in bp) to encoder positions (128bp resolution)
-    center_window_positions = max(1, center_bp // 128)
     
     print(f"Running inference on {len(dataloader)} batches...")
     
@@ -113,19 +114,24 @@ def get_predictions(
         
         # Convert to numpy for pooling
         head_np = np.array(head_predictions)
-        # Pool over center window to match training loss logic in EncoderMPRAHead
         seq_len = head_np.shape[1]
-        window_size = min(center_window_positions, seq_len)
-        center_start = max((seq_len - window_size) // 2, 0)
-        center_end = center_start + window_size
-        center_preds = head_np[:, center_start:center_end, :]  # (B, W, num_tracks)
         
-        if pooling_type == "mean":
-            pooled = center_preds.mean(axis=1)  # (B, num_tracks)
-        elif pooling_type == "max":
-            pooled = center_preds.max(axis=1)
-        else:  # "sum" or fallback
-            pooled = center_preds.sum(axis=1)
+        # Pool EXACTLY like EncoderMPRAHead.loss()
+        if pooling_type == "flatten":
+            # In flatten mode, predict() returns (B, 1, num_tracks)
+            pooled = head_np.squeeze(1)  # (B, num_tracks)
+        elif pooling_type == "center":
+            # Take only the center position
+            center_idx = seq_len // 2
+            pooled = head_np[:, center_idx, :]  # (B, num_tracks)
+        else:
+            # For mean/max/sum, pool over the ENTIRE sequence dimension
+            if pooling_type == "mean":
+                pooled = head_np.mean(axis=1)  # (B, num_tracks)
+            elif pooling_type == "max":
+                pooled = head_np.max(axis=1)
+            else:  # "sum" or fallback
+                pooled = head_np.sum(axis=1)
         
         # Collapse num_tracks if it's 1
         if pooled.shape[-1] == 1:
@@ -222,6 +228,8 @@ def main():
         'center_bp': 256,
         'pooling_type': 'sum',
     }
+    # By default, assume full-model checkpoint if config is missing
+    save_full_model = True
     config_path = checkpoint_dir / 'config.json'
     if config_path.exists():
         try:
@@ -232,6 +240,7 @@ def main():
                            .get('metadata', {}))
             # Merge, giving precedence to values from the checkpoint config.
             head_metadata.update(head_cfg)
+            save_full_model = cfg.get('save_full_model', False)
         except Exception:
             # Fall back to defaults if anything goes wrong reading config.
             pass
@@ -250,39 +259,41 @@ def main():
         ),
     )
     
-    # Create MPRA model that uses encoder output only (no transformer/decoder),
-    # matching how the model was trained for short MPRA sequences.
-    print("\nCreating MPRA model with encoder output...")
-    model = create_model_with_custom_heads(
-        'all_folds',
-        custom_heads=['mpra_head'],
-        use_encoder_output=True,
-    )
-    
-    # Load checkpoint parameters directly with Orbax into this model
-    import orbax.checkpoint as ocp
-    checkpoint_path = checkpoint_dir / 'checkpoint'
-    if not checkpoint_path.exists():
-        raise FileNotFoundError(f"Checkpoint not found at {checkpoint_path}")
-    
-    print(f"\nLoading checkpoint from {checkpoint_path}...")
-    checkpointer = ocp.StandardCheckpointer()
-    loaded_params, loaded_state = checkpointer.restore(checkpoint_path)
-
-    # Determine whether this is a full-model checkpoint or heads-only checkpoint.
-    # This mirrors the logic in alphagenome_ft.custom_model.load_checkpoint().
-    config_path = checkpoint_dir / 'config.json'
-    save_full_model = True  # default to full model if no config is found (backwards compatibility)
-    if config_path.exists():
-        with open(config_path, 'r') as f:
-            cfg = json.load(f)
-        save_full_model = cfg.get('save_full_model', False)
-
     if save_full_model:
-        # Full model checkpoint: replace entire parameter/state trees
-        model._params = loaded_params
-        model._state = loaded_state
+        # Stage 2 (and any full-model) checkpoints: let alphagenome_ft reconstruct the
+        # exact model + transform that was used during training to avoid Haiku
+        # parameter/topology mismatches.
+        print("\nDetected full-model checkpoint (save_full_model=True).")
+        print("Loading full model with alphagenome_ft.load_checkpoint()...")
+        model = load_checkpoint(
+            checkpoint_dir,
+            base_model_version='all_folds',
+        )
+        print("✓ Full model loaded successfully")
     else:
+        # Stage 1 (heads-only) checkpoints: match the training-time model creation:
+        # encoder-output head on short MPRA promoter constructs.
+        PROMOTER_CONSTRUCT_LENGTH = 281
+        init_seq_len = PROMOTER_CONSTRUCT_LENGTH
+        print(f"\nDetected heads-only checkpoint. Creating MPRA model with "
+              f"encoder output (init_seq_len={init_seq_len} bp)...")
+        model = create_model_with_custom_heads(
+            'all_folds',
+            custom_heads=['mpra_head'],
+            use_encoder_output=True,
+            init_seq_len=init_seq_len,
+        )
+        
+        # Load checkpoint parameters directly with Orbax into this model
+        import orbax.checkpoint as ocp
+        checkpoint_path = checkpoint_dir / 'checkpoint'
+        if not checkpoint_path.exists():
+            raise FileNotFoundError(f"Checkpoint not found at {checkpoint_path}")
+        
+        print(f"\nLoading checkpoint from {checkpoint_path}...")
+        checkpointer = ocp.StandardCheckpointer()
+        loaded_params, loaded_state = checkpointer.restore(checkpoint_path)
+
         # Heads-only checkpoint: merge loaded head params into the existing model
         # while keeping the pretrained backbone parameters from the base model.
         def merge_head_params(model_params, loaded_head_params):
@@ -334,7 +345,7 @@ def main():
         model._params = jax.device_put(model._params, device)
         model._state = jax.device_put(model._state, device)
 
-    print("✓ Model loaded successfully")
+        print("✓ Heads-only checkpoint merged successfully")
     
     # Create test dataset
     print(f"\nLoading test dataset (cell_type={args.cell_type})...")
