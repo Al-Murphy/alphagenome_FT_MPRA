@@ -384,7 +384,7 @@ def main():
     # Try to load head configuration from checkpoint (if available) so that
     # the test-time head definition exactly matches the training-time one.
     head_metadata = {
-        'center_bp': 249,
+        'center_bp': 256,
         'pooling_type': 'flatten',
     }
     config_path = checkpoint_dir / 'config.json'
@@ -432,7 +432,7 @@ def main():
     if head_metadata.get('pooling_type') == 'flatten':
         # For flatten pooling, use center_bp from metadata as init_seq_len
         # This matches how the training script initializes the model
-        init_seq_len = head_metadata.get('center_bp', 249)
+        init_seq_len = head_metadata.get('center_bp', 256)
         print(f"Flatten pooling detected, using init_seq_len={init_seq_len}bp from center_bp")
 
     # Register custom DeepSTARR head using (possibly) checkpoint-derived metadata.

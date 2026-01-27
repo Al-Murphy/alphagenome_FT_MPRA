@@ -423,13 +423,15 @@ class DeepSTARRDataset:
         organism: dna_model.Organism = dna_model.Organism.HOMO_SAPIENS,
         random_shift: bool = False,
         random_shift_likelihood: float = 0.5,
-        max_shift: int = 20,
+        max_shift: int = 25,
         reverse_complement: bool = False,
         reverse_complement_likelihood: float = 0.5,
         rng_key: jax.Array | None = None,
         subset_frac: float = 1.0,
         use_cached_embeddings: bool = False,
         cache_file: str | None = None,
+        upstream_adapter_seq: str = "TCCCTACACGACGCTCTTCCGATCT",
+        downstream_adapter_seq: str = "AGATCGGAAGAGCACACGTCTGAACT",
     ):
         """
         Args:
@@ -461,6 +463,8 @@ class DeepSTARRDataset:
         assert max_shift >= 0
         self.reverse_complement = reverse_complement
         self.reverse_complement_likelihood = reverse_complement_likelihood
+        self.upstream_adapter_seq = upstream_adapter_seq
+        self.downstream_adapter_seq = downstream_adapter_seq
         self.random_shift = random_shift
         self.random_shift_likelihood = random_shift_likelihood
         self.max_shift = max_shift
@@ -635,7 +639,7 @@ class DeepSTARRDataset:
             }
         else:
             # Non-cached path: do full sequence processing
-            sequence = self.data.iloc[idx]['seq']
+            sequence = self.upstream_adapter_seq + self.data.iloc[idx]['seq'] + self.downstream_adapter_seq
             dev_activity = self.data.iloc[idx]['dev_activity']
             hk_activity = self.data.iloc[idx]['hk_activity']
             labels = jnp.array([dev_activity, hk_activity])

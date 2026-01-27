@@ -110,19 +110,19 @@ def main():
     parser.add_argument(
         '--random_shift',
         action='store_true',
-        default=False,
-        help='Apply random shifts to training data (augmentation) - NOTE doesnt make sense for StarrSeq data as we arent generating the full promoter construct'
+        default=True,
+        help='Apply random shifts to training data (augmentation) - We have the StarrSeq adaptors making this possible'
     )
     parser.add_argument(
         '--random_shift_likelihood',
         type=float,
         default=0.5,
-        help='Likelihood of applying random shifts to training data - NOTE doesnt make sense for StarrSeq data as we arent generating the full promoter construct'
+        help='Likelihood of applying random shifts to training data'
     )
     parser.add_argument(
         '--max_shift',
         type=int,
-        default=20,
+        default=25,
         help='Maximum shift amount in base pairs'
     )
     parser.add_argument(
@@ -382,7 +382,7 @@ def main():
     
     # For flatten pooling with cached embeddings, we need to know the embedding length
     # BEFORE initializing the model (to set correct weight matrix sizes)
-    # For non-cached mode with flatten, use the actual sequence length (249bp for DeepSTARR)
+    # For non-cached mode with flatten, use the actual sequence length (249bp sequence +51bp adaptors = 300bp for DeepSTARR)
     init_seq_len = None
     if args.pooling_type == 'flatten':
         if args.use_cached_embeddings:
@@ -399,7 +399,7 @@ def main():
             del cache_data  # Free memory
         else:
             # For non-cached mode, use the actual sequence length (249bp for DeepSTARR)
-            init_seq_len = 249
+            init_seq_len = 249+51
             print(f"\nUsing flatten pooling with sequence length: {init_seq_len} bp")
     
     # Create model
