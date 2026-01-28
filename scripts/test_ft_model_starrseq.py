@@ -23,7 +23,12 @@ USAGE EXAMPLES:
        --checkpoint_dir ./results/models/checkpoints/deepstarr/deepstarr-head-encoder \
        --batch_size 64
 
-4. Use in Python script or notebook:
+4. Use a local base AlphaGenome checkpoint instead of Kaggle:
+   python scripts/test_ft_model_starrseq.py \
+       --checkpoint_dir ./results/models/checkpoints/deepstarr/deepstarr-head-encoder \
+       --base_checkpoint_path /home/USERNAME/.cache/kagglehub/models/google/alphagenome/jax/all_folds/1/
+
+5. Use in Python script or notebook:
    from test_ft_model_starrseq import get_predictions, compute_metrics
    from alphagenome_ft import load_checkpoint
    from src import DeepSTARRDataset, STARRSeqDataLoader
@@ -367,11 +372,20 @@ def main():
         default='./results/test_predictions/starrseq',
         help='Directory to save predictions (default: ./results/test_predictions)'
     )
+    parser.add_argument(
+        '--base_checkpoint_path',
+        type=str,
+        default=None,
+        help='Optional local AlphaGenome checkpoint directory. '
+             'If provided, the base model will be loaded from this path '
+             'instead of using Kaggle.'
+    )
     
     args = parser.parse_args()
     
     # Resolve checkpoint directory to an absolute path for Orbax
     checkpoint_dir = Path(args.checkpoint_dir).resolve()
+    base_checkpoint_path = args.base_checkpoint_path
     
     print("=" * 80)
     print("Testing Fine-tuned AlphaGenome DeepSTARR Model")
@@ -379,6 +393,8 @@ def main():
     print(f"Checkpoint: {checkpoint_dir}")
     print(f"Data path: {args.data_path}")
     print(f"Batch size: {args.batch_size}")
+    if base_checkpoint_path is not None:
+        print(f"Base AlphaGenome checkpoint: {base_checkpoint_path}")
     print()
     
     # Try to load head configuration from checkpoint (if available) so that
@@ -455,6 +471,7 @@ def main():
     model = create_model_with_custom_heads(
         'all_folds',
         custom_heads=['deepstarr_head'],
+        checkpoint_path=base_checkpoint_path,
         use_encoder_output=True,
         init_seq_len=init_seq_len,
     )
@@ -576,9 +593,12 @@ def main():
     print("=" * 80)
     
     # Reference: DeepSTARR paper performance
-    print("\nReference (DeepSTARR paper):")
-    print("  Dev Pearson r: 0.68")
-    print("  Hk Pearson r:  0.74")
+    print("\nReference DeepSTARR model:")
+    print("  Dev Pearson r: 0.656")
+    print("  Hk Pearson r:  0.736")
+    print("Reference Dream-RNN model:")
+    print("  Dev Pearson r: 0.665")
+    print("  Hk Pearson r:  0.746")
     print("=" * 80)
     
     # Save predictions as CSV

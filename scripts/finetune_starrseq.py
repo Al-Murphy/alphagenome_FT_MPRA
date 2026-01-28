@@ -2,9 +2,10 @@
 Finetune AlphaGenome with DeepSTARR head on DeepSTARR dataset from
 [de Almeida et al., 2022](https://www.nature.com/articles/s41588-022-01048-5)
 
-Compare performance against DeepSTARR (PCC Developmental enhancers - 0.700985656, PCC Housekeeping enhancers - 0.754766426)
-and Dream-RNN (PCC Developmental enhancers - 0.739854584, PCC Housekeeping enhancers - 0.790806568)
-Values taken from Fig.3A (median of fold perf) [A community effort to optimize sequence-based deep learning models of gene regulation](https://www.nature.com/articles/s41587-024-02414-w)
+Compare performance against DeepSTARR (Pearson R Developmental enhancers - 0.656, PCC Housekeeping enhancers - 0.736)
+and Dream-RNN (Pearson R Developmental enhancers - 0.665, PCC Housekeeping enhancers - 0.746)
+DeepSTARR values from downlaoding weights and running test set. 
+DREAM-RNN values are from [DEGU](https://www.nature.com/articles/s44387-025-00053-3) Supp Fig.2a-b (mean of ensemble)
 
 DeepSTARR predicts two types of enhancer activity:
 - Developmental enhancer activity (Dev_log2_enrichment)
@@ -69,6 +70,11 @@ USAGE EXAMPLES:
         --cache_file ./.cache/embeddings/deepstarr_train_embeddings.pkl \
         --num_epochs 100 \
         --learning_rate 1e-3
+
+11. Use a local base AlphaGenome checkpoint instead of Kaggle:
+    python scripts/finetune_starrseq.py \
+        --checkpoint_dir ./results/models/checkpoints/deepstarr/deepstarr-head-encoder \
+        --base_checkpoint_path /home/USERNAME/.cache/kagglehub/models/google/alphagenome/jax/all_folds/1/
 """
 
 import argparse
@@ -169,6 +175,14 @@ def main():
         default='relu',
         choices=['relu', 'gelu'],
         help='Activation function: relu or gelu'
+    )
+    parser.add_argument(
+        '--base_checkpoint_path',
+        type=str,
+        default=None,
+        help='Optional local AlphaGenome checkpoint directory. '
+             'If provided, the base model will be loaded from this path '
+             'instead of using Kaggle.'
     )
     
     # Cached embeddings (for faster training)
@@ -344,6 +358,8 @@ def main():
     print(f"Checkpoint path:            {checkpoint_path}")
     print(f"Save full model:            {args.save_full_model}")
     print(f"Use W&B:                    {not args.no_wandb}")
+    if args.base_checkpoint_path is not None:
+        print(f"Base AlphaGenome checkpoint:{args.base_checkpoint_path}")
     if not args.no_wandb:
         print(f"W&B project:                {args.wandb_project}")
         print(f"W&B run name:               {args.wandb_name}")
@@ -407,6 +423,7 @@ def main():
     model_with_custom = create_model_with_custom_heads(
         'all_folds',
         custom_heads=['deepstarr_head'],
+        checkpoint_path=args.base_checkpoint_path,
         use_encoder_output=True,
         init_seq_len=init_seq_len
     )

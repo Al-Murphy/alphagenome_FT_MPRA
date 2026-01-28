@@ -181,27 +181,30 @@ class MPRAHead(CustomHead):
             return {'loss': jnp.array(0.0)}
         
         # predictions shape: (batch, sequence_length, num_tracks)
-        # Pool over center region to get scalar predictions for loss computation
-        seq_len = predictions.shape[1]
+        # Pool over center region to get scalar predictions for loss computation.
+        # IMPORTANT: All indexing values (seq_len, window_size, center_start) are kept
+        # as plain Python integers so they are static and JIT-safe.
+        seq_len = predictions.shape[1]  # Python int (static sequence length)
         
-        # Convert center_bp to positions based on embedding resolution
+        # Convert center_bp to positions based on embedding resolution (Python ints only)
         if self._embedding_mode == '1bp':
             # For 1bp mode, center_bp is already in the right units
-            window_size = self._center_bp
+            window_size = int(self._center_bp)
         else:  # '128bp'
             # For 128bp mode, convert bp to positions (each position = 128bp)
             window_size = max(1, int(self._center_bp / 128))
         
-        # For short sequences, use entire sequence
-        window_size = jnp.minimum(window_size, seq_len)
+        # For short sequences, use entire sequence (Python min to keep int)
+        window_size = min(window_size, seq_len)
         center_start = (seq_len - window_size) // 2
-        center_start = jnp.maximum(center_start, 0)
+        center_start = max(center_start, 0)
         
+        # Use dynamic_slice_in_dim with static Python integer indices
         center_predictions = jax.lax.dynamic_slice_in_dim(
             predictions,
             start_index=center_start,
             slice_size=window_size,
-            axis=1
+            axis=1,
         )
         
         # Pool to get scalar per batch
@@ -385,9 +388,11 @@ class EncoderMPRAHead(CustomHead):
             return {'loss': jnp.array(0.0)}
         
         # predictions shape: (batch, sequence_length_in_encoder_positions, num_tracks)
-        # Pool over center region to get scalar predictions for loss computation
-        # Note: sequence_length is in encoder positions (128bp resolution)
-        seq_len = predictions.shape[1]  # Length in encoder positions
+        # Pool over center region to get scalar predictions for loss computation.
+        # Note: sequence_length is in encoder positions (128bp resolution).
+        # IMPORTANT: Keep all indexing values as plain Python integers so they are
+        # static when the loss is JIT-compiled in the cached-embedding (stage 1) path.
+        seq_len = predictions.shape[1]  # Python int (length in encoder positions)
         
         # Handle different pooling types
         if self._pooling_type == 'flatten':
@@ -395,28 +400,29 @@ class EncoderMPRAHead(CustomHead):
             # from the predict() function, so just squeeze the sequence dimension
             pred_values = predictions.squeeze(1)  # (batch, num_tracks)
         elif self._pooling_type == 'center':
-            # Take only the center position (use dynamic_slice for JIT compatibility)
-            center_idx = seq_len // 2
+            # Take only the center position.
+            center_idx = seq_len // 2  # Python int
             center_predictions = jax.lax.dynamic_slice_in_dim(
                 predictions,
                 start_index=center_idx,
                 slice_size=1,
-                axis=1
+                axis=1,
             )
             pred_values = center_predictions.squeeze(1)  # (batch, num_tracks)
         else:
             # For center window pooling (mean/max/sum)
             # Extract center window based on center_bp (converted to encoder positions)
-            window_size = jnp.minimum(self._center_window_positions, seq_len)
+            # IMPORTANT: use only Python ints here for JIT safety.
+            window_size = min(int(self._center_window_positions), seq_len)
             center_start = (seq_len - window_size) // 2
-            center_start = jnp.maximum(center_start, 0)
+            center_start = max(center_start, 0)
             
-            # Extract center window using dynamic_slice for JIT compatibility
+            # Extract center window using dynamic_slice_in_dim with static indices
             center_predictions = jax.lax.dynamic_slice_in_dim(
                 predictions,
                 start_index=center_start,
                 slice_size=window_size,
-                axis=1
+                axis=1,
             )
             
             # Pool to get scalar per batch
@@ -571,33 +577,35 @@ class DeepSTARRHead(CustomHead):
         if targets is None:
             return {'loss': jnp.array(0.0)}
         
-        seq_len = predictions.shape[1]
+        # Use static Python integers for all indexing to keep JIT happy in both
+        # cached-embedding (stage 1) and full-model (stage 2) training.
+        seq_len = predictions.shape[1]  # Python int
         
         # Handle different pooling types
         if self._pooling_type == 'flatten':
             pred_values = predictions.squeeze(1)  # (batch, 2)
         elif self._pooling_type == 'center':
-            center_idx = seq_len // 2
+            center_idx = seq_len // 2  # Python int
             center_predictions = jax.lax.dynamic_slice_in_dim(
                 predictions,
                 start_index=center_idx,
                 slice_size=1,
-                axis=1
+                axis=1,
             )
             pred_values = center_predictions.squeeze(1)  # (batch, 2)
         else:
             # For center window pooling (mean/max/sum)
             # Extract center window based on center_bp (converted to encoder positions)
-            window_size = jnp.minimum(self._center_window_positions, seq_len)
+            window_size = min(int(self._center_window_positions), seq_len)
             center_start = (seq_len - window_size) // 2
-            center_start = jnp.maximum(center_start, 0)
+            center_start = max(center_start, 0)
             
-            # Extract center window using dynamic_slice for JIT compatibility
+            # Extract center window using dynamic_slice_in_dim with static indices
             center_predictions = jax.lax.dynamic_slice_in_dim(
                 predictions,
                 start_index=center_start,
                 slice_size=window_size,
-                axis=1
+                axis=1,
             )
             
             if self._pooling_type == 'mean':

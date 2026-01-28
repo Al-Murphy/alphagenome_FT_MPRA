@@ -171,6 +171,14 @@ def main():
         choices=['relu', 'gelu'],
         help='Activation function: relu or gelu'
     )
+    parser.add_argument(
+        '--base_checkpoint_path',
+        type=str,
+        default=None,
+        help='Optional local AlphaGenome checkpoint directory. '
+             'If provided, the base model will be loaded from this path '
+             'instead of using Kaggle.'
+    )
     
     # Cached embeddings (for faster training)
     parser.add_argument(
@@ -223,7 +231,7 @@ def main():
         '--weight_decay',
         type=float,
         default=None,
-        help='Weight decay (L2 regularization) for AdamW optimizer (e.g., 1e-6)'
+        help='Weight decay (L2 regularization) for Adam(W) optimizer (e.g., 1e-6)'
     )
     parser.add_argument(
         '--lr_scheduler',
@@ -351,6 +359,8 @@ def main():
     print(f"Checkpoint path:            {checkpoint_path}")
     print(f"Save full model:            {args.save_full_model}")
     print(f"Use W&B:                    {not args.no_wandb}")
+    if args.base_checkpoint_path is not None:
+        print(f"Base AlphaGenome checkpoint:{args.base_checkpoint_path}")
     if not args.no_wandb:
         print(f"W&B project:                {args.wandb_project}")
         print(f"W&B run name:               {args.wandb_name}")
@@ -414,6 +424,7 @@ def main():
     model_with_custom = create_model_with_custom_heads(
         'all_folds',
         custom_heads=['mpra_head'],
+        checkpoint_path=args.base_checkpoint_path,
         use_encoder_output=True,
         init_seq_len=init_seq_len
     )
