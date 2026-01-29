@@ -10,11 +10,20 @@ Key behaviors:
   - HepG2 models → F9, LDLR, SORT1
   - K562 models → GP1BB, HBB, HBG1, PKLR
 - Only evaluates on CAGI5 challenge (test) set, not training set.
+- Computes variant effects as the difference between alt and ref predictions:
+  variant_effect = alt_prediction - ref_prediction. 
+  Note this is becuase we are using the MPRA head, which is already in log scale,
+  it predicts log(RNA/DNA). So would not make sense to use the genome-wide model 
+  approach of log(sum(alt)/sum(ref)). The MPRA values already log-transformed &
+  residualized / normalized relative to background
 - Computes Pearson r and Spearman ρ on:
     1) All SNPs
     2) High-confidence SNPs (Confidence > 0.1)
 - Uses hg19 reference sequences and 1-based genomic coordinates.
 - Sequence length matches training: 281 bp (full promoter construct).
+
+To note, high confidence SNPs relate tot he significance of the SNP in the MPRA regression model.
+> We deemed a confidence score greater or equal to 0.1 (p-value of 10⁻⁵) indicates that the SNV ‘has an expression effect’.
 
 Prerequisites:
 - Run `scripts/fetch_cagi5_references.py` to download hg19 reference sequences.
@@ -54,24 +63,82 @@ from alphagenome_ft import (
 )
 from src import EncoderMPRAHead  # type: ignore
 
+from src.seq_loader import seq_loader  # type: ignore
+
 
 PROMOTER_CONSTRUCT_LENGTH = 281  # same init_seq_len as finetune_mpra.py
 
 
 # ---------------------------------------------------------------------------
-# CAGI5 utilities (adapted from RankProject/scripts/evaluate_cagi5.py)
+# CAGI5 utilities
 # ---------------------------------------------------------------------------
 
-def load_cagi5_references(references_path: Path) -> Dict[str, dict]:
-    """Load CAGI5 reference sequences (hg19) from JSON file."""
-    if not references_path.exists():
-        raise FileNotFoundError(
-            f"Reference file not found: {references_path}\n"
-            f"Run: python scripts/fetch_cagi5_references.py"
-        )
-    with open(references_path) as f:
-        refs = json.load(f)
-    return refs
+# CAGI5 element coordinates (hg19/GRCh37)
+# Format: {element: (chrom, start, end)}
+CAGI5_REGIONS = {
+    'F9': ('chrX', 138612500, 138613500),
+    'GP1BB': ('chr22', 19710500, 19711700),
+    'HBB': ('chr11', 5248100, 5248800),
+    'HBG1': ('chr11', 5270900, 5271800),
+    'HNF4A': ('chr20', 42984000, 42985000),
+    'IRF4': ('chr6', 396000, 397200),
+    'IRF6': ('chr1', 209989000, 209990500),
+    'LDLR': ('chr19', 11199800, 11200800),
+    'MSMB': ('chr10', 51548800, 51550400),
+    'MYCrs6983267': ('chr8', 128412900, 128414500),
+    'PKLR': ('chr1', 155271000, 155272300),
+    'SORT1': ('chr1', 109817100, 109818700),
+    'TERT-GBM': ('chr5', 1295000, 1295800),
+    'TERT-HEK293T': ('chr5', 1295000, 1295800),
+    'ZFAND3': ('chr6', 37775100, 37776600),
+}
+
+
+def get_ref_allele_from_genome(
+    seq_loader_obj: seq_loader,
+    chromosome: str,
+    position: int,
+    ref_allele_length: int,
+) -> str:
+    """Get reference allele from hg19 genome using seq_loader.
+    
+    Args:
+        seq_loader_obj: seq_loader instance for hg19.
+        chromosome: Chromosome (e.g., 'chr1', 'chrX').
+        position: Variant position (1-based, hg19).
+        ref_allele_length: Length of reference allele.
+        
+    Returns:
+        Reference allele sequence from genome.
+    """
+    # pysam uses 0-based, half-open intervals
+    start_0based = position - 1
+    end_0based = start_0based + ref_allele_length
+    ref_seq = seq_loader_obj.genome_dat.fetch(chromosome, start_0based, end_0based).upper()
+    return ref_seq
+
+
+def verify_ref_allele(
+    seq_loader_obj: seq_loader,
+    chromosome: str,
+    position: int,
+    ref_allele: str,
+) -> bool:
+    """Verify that the reference allele matches the hg19 genome.
+    
+    Args:
+        seq_loader_obj: seq_loader instance for hg19.
+        chromosome: Chromosome (e.g., 'chr1', 'chrX').
+        position: Variant position (1-based, hg19).
+        ref_allele: Reference allele from CAGI5 data.
+        
+    Returns:
+        True if ref allele matches genome, False otherwise.
+    """
+    genome_ref = get_ref_allele_from_genome(
+        seq_loader_obj, chromosome, position, len(ref_allele)
+    )
+    return genome_ref.upper() == ref_allele.upper()
 
 
 def parse_cagi5_dir(
@@ -125,54 +192,66 @@ def parse_cagi5_dir(
     return data
 
 
-def get_variant_sequence(
-    ref_seq: str,
-    ref_start: int,
+def get_ref_alt_sequences(
+    seq_loader_obj: seq_loader,
+    chromosome: str,
     var_pos: int,
     ref_allele: str,
     alt_allele: str,
-    window: int = 230,
-) -> str | None:
-    """Create variant sequence centered on the variant position (hg19, 1-based).
+    window: int = 281,
+) -> Tuple[str | None, str | None]:
+    """Get both reference and alternate sequences centered on the variant position (hg19, 1-based).
 
     Args:
-        ref_seq: Full reference sequence for the element (hg19).
-        ref_start: Genomic start position of ref_seq (1-based).
-        var_pos: Genomic position of the variant (1-based).
+        seq_loader_obj: seq_loader instance for hg19.
+        chromosome: Chromosome (e.g., 'chr1', 'chrX').
+        var_pos: Genomic position of the variant (1-based, hg19).
         ref_allele: Reference allele from CAGI5 file.
         alt_allele: Alternate allele from CAGI5 file.
         window: Length of output sequence to generate.
+        
+    Returns:
+        Tuple of (ref_sequence, alt_sequence), or (None, None) if extraction fails.
     """
-    # Convert to 0-based index within ref_seq
-    idx = var_pos - ref_start
-    if idx < 0 or idx >= len(ref_seq):
-        return None
-
-    # Best-effort reference allele check (do not hard-fail if mismatch)
-    ref_in_seq = ref_seq[idx : idx + len(ref_allele)]
+    # Extract reference sequence centered on variant
+    half_window = window // 2
+    start_0based = max(0, var_pos - 1 - half_window)
+    end_0based = start_0based + window
+    
+    # Get reference sequence from hg19
+    ref_seq = seq_loader_obj.genome_dat.fetch(chromosome, start_0based, end_0based).upper()
+    
+    # Verify ref allele matches
+    variant_pos_in_seq = (var_pos - 1) - start_0based
+    if variant_pos_in_seq < 0 or variant_pos_in_seq + len(ref_allele) > len(ref_seq):
+        return None, None
+    
+    ref_in_seq = ref_seq[variant_pos_in_seq : variant_pos_in_seq + len(ref_allele)]
     if ref_in_seq.upper() != ref_allele.upper():
-        # Keep going; CAGI5 files can contain edge-case indels.
+        # Best-effort check - warn but continue
         pass
 
-    # Create variant sequence by substituting alt allele
-    var_seq = ref_seq[:idx] + alt_allele + ref_seq[idx + len(ref_allele) :]
+    # Create alternate sequence by substituting alt allele
+    alt_seq = (
+        ref_seq[:variant_pos_in_seq] +
+        alt_allele +
+        ref_seq[variant_pos_in_seq + len(ref_allele):]
+    )
 
-    # Extract window centered on variant
-    center = idx + len(alt_allele) // 2
-    half_window = window // 2
-    start = center - half_window
-    end = start + window
+    # Ensure we return exactly window length for both sequences
+    def ensure_window_length(seq: str) -> str:
+        if len(seq) < window:
+            # Pad with N's if needed
+            return seq + "N" * (window - len(seq))
+        elif len(seq) > window:
+            # Trim if needed (shouldn't happen, but just in case)
+            return seq[:window]
+        return seq
 
-    if start < 0:
-        pad_left = -start
-        seq = "N" * pad_left + var_seq[: window - pad_left]
-    elif end > len(var_seq):
-        pad_right = end - len(var_seq)
-        seq = var_seq[start:] + "N" * pad_right
-    else:
-        seq = var_seq[start:end]
+    ref_seq_final = ensure_window_length(ref_seq)
+    alt_seq_final = ensure_window_length(alt_seq)
 
-    return seq[:window]
+    return ref_seq_final, alt_seq_final
 
 
 def batch_predict_mpra(
@@ -271,6 +350,53 @@ def compute_correlations(
     pearson, _ = pearsonr(preds, targets)
     spearman, _ = spearmanr(preds, targets)
     return float(pearson), float(spearman)
+
+
+def test_ref_allele_verification(
+    seq_loader_obj: seq_loader,
+    cagi5_data: Dict[str, pd.DataFrame],
+    max_test_variants: int = 100,
+) -> bool:
+    """Unit test to verify reference alleles match hg19 genome.
+    
+    Args:
+        seq_loader_obj: seq_loader instance for hg19.
+        cagi5_data: Dictionary of CAGI5 DataFrames by element.
+        max_test_variants: Maximum number of variants to test per element.
+        
+    Returns:
+        True if all tested variants pass, False otherwise.
+    """
+    all_passed = True
+    total_tested = 0
+    total_passed = 0
+    
+    for element, df in cagi5_data.items():
+        if element not in CAGI5_REGIONS:
+            continue
+        
+        chromosome = CAGI5_REGIONS[element][0]
+        test_df = df.head(max_test_variants)
+        
+        for _, row in test_df.iterrows():
+            var_pos = int(row["Pos"])
+            ref_allele = str(row["Ref"])
+            
+            total_tested += 1
+            if verify_ref_allele(seq_loader_obj, chromosome, var_pos, ref_allele):
+                total_passed += 1
+            else:
+                all_passed = False
+                genome_ref = get_ref_allele_from_genome(
+                    seq_loader_obj, chromosome, var_pos, len(ref_allele)
+                )
+                print(f"  FAIL: {element} {chromosome}:{var_pos} "
+                      f"expected {ref_allele}, got {genome_ref}")
+    
+    print(f"  Tested {total_tested} variants, {total_passed} passed, "
+          f"{total_tested - total_passed} failed")
+    
+    return all_passed
 
 
 # ---------------------------------------------------------------------------
@@ -454,15 +580,6 @@ def main() -> None:
         ),
     )
     parser.add_argument(
-        "--references",
-        type=str,
-        default=None,
-        help=(
-            "Path to cagi5_references.json (hg19). "
-            "Default: ./data/cagi5/cagi5_references.json."
-        ),
-    )
-    parser.add_argument(
         "--seq_len",
         type=int,
         default=PROMOTER_CONSTRUCT_LENGTH,
@@ -486,18 +603,13 @@ def main() -> None:
     else:
         cagi5_dir = Path(args.cagi5_dir).resolve()
 
-    if args.references is None:
-        references_path = repo_root / "data" / "cagi5" / "cagi5_references.json"
-    else:
-        references_path = Path(args.references).resolve()
-
     print("=" * 80)
     print("Zero-shot CAGI5 Evaluation for Fine-tuned AlphaGenome MPRA Models")
     print("=" * 80)
     print(f"Checkpoint dir:      {checkpoint_dir}")
     print(f"Cell type:           {args.cell_type}")
     print(f"CAGI5 dir:           {cagi5_dir}")
-    print(f"References (hg19):   {references_path}")
+    print(f"Genome build:        hg19 (via seq_loader)")
     print(f"Sequence length:     {args.seq_len} bp")
     print(f"Batch size:          {args.batch_size}")
     print("=" * 80)
@@ -529,66 +641,108 @@ def main() -> None:
     )
     print("✓ Model loaded")
 
-    # Load references & CAGI5 data
-    print("\nLoading CAGI5 reference sequences (hg19)...")
-    references = load_cagi5_references(references_path)
-    print(f"✓ Loaded {len(references)} reference elements")
+    # Initialize seq_loader for hg19
+    print("\nInitializing seq_loader for hg19...")
+    seq_loader_obj = seq_loader(build='hg19', model_receptive_field=args.seq_len)
+    print("✓ seq_loader initialized")
 
     print("\nLoading CAGI5 variant tables (challenge/test set only)...")
     # Only load challenge_* files (held-out CAGI5 test set) and restrict
     # to elements whose experimental cell line matches the fine-tuned model.
     cagi5_data = parse_cagi5_dir(cagi5_dir, elements_to_include=allowed_elements)
     print(f"✓ Loaded CAGI5 data for {len(cagi5_data)} elements")
+    
+    # Run unit test to verify ref alleles match reference genome
+    print("\nRunning unit test: Verifying reference alleles match hg19 genome...")
+    test_passed = test_ref_allele_verification(seq_loader_obj, cagi5_data)
+    if test_passed:
+        print("✓ Unit test passed: All reference alleles match hg19 genome")
+    else:
+        print("⚠ Unit test failed: Some reference alleles do not match hg19 genome")
+        print("  Continuing evaluation, but results may be inaccurate...")
 
     # Aggregate predictions/targets across all elements
     all_preds: List[float] = []
     all_targets: List[float] = []
     all_conf: List[float] = []
+    
+    # Store per-element results
+    element_results: List[dict] = []
 
     for element, df in cagi5_data.items():
-        if element not in references:
-            print(f"  {element}: no reference sequence in JSON, skipping")
+        if element not in CAGI5_REGIONS:
+            print(f"  {element}: no chromosome mapping in CAGI5_REGIONS, skipping")
             continue
 
-        ref_info = references[element]
-        ref_seq = ref_info["sequence"]
-        ref_start = ref_info["start"]  # 1-based hg19 genomic start
+        chromosome = CAGI5_REGIONS[element][0]
 
-        sequences: List[str] = []
+        ref_sequences: List[str] = []
+        alt_sequences: List[str] = []
         values: List[float] = []
         confidences: List[float] = []
 
         for _, row in df.iterrows():
-            seq = get_variant_sequence(
-                ref_seq=ref_seq,
-                ref_start=ref_start,
+            ref_seq, alt_seq = get_ref_alt_sequences(
+                seq_loader_obj=seq_loader_obj,
+                chromosome=chromosome,
                 var_pos=int(row["Pos"]),
                 ref_allele=str(row["Ref"]),
                 alt_allele=str(row["Alt"]),
                 window=args.seq_len,
             )
-            if seq is None or len(seq) != args.seq_len:
+            if ref_seq is None or alt_seq is None or len(ref_seq) != args.seq_len or len(alt_seq) != args.seq_len:
                 continue
-            sequences.append(seq)
+            ref_sequences.append(ref_seq)
+            alt_sequences.append(alt_seq)
             values.append(float(row["Value"]))
             confidences.append(float(row["Confidence"]))
 
-        if not sequences:
+        if not ref_sequences:
             print(f"  {element}: no valid sequences, skipping")
             continue
 
-        preds = batch_predict_mpra(
+        # Predict on both reference and alternate sequences
+        ref_preds = batch_predict_mpra(
             model=model,
-            sequences=sequences,
+            sequences=ref_sequences,
             head_name="mpra_head",
             batch_size=args.batch_size,
         )
+        
+        alt_preds = batch_predict_mpra(
+            model=model,
+            sequences=alt_sequences,
+            head_name="mpra_head",
+            batch_size=args.batch_size,
+        )
+        
+        # Calculate variant effect as difference: alt - ref
+        preds = alt_preds - ref_preds
 
         all_preds.extend(preds.tolist())
         all_targets.extend(values)
         all_conf.extend(confidences)
 
         pearson_el, spearman_el = compute_correlations(preds, np.asarray(values, dtype=np.float32))
+        
+        # Compute high-confidence metrics for this element
+        conf_arr = np.asarray(confidences, dtype=np.float32)
+        mask_high_el = conf_arr > 0.1
+        pearson_el_hi, spearman_el_hi = compute_correlations(
+            preds[mask_high_el] if mask_high_el.sum() > 0 else np.array([]),
+            np.asarray(values, dtype=np.float32)[mask_high_el] if mask_high_el.sum() > 0 else np.array([]),
+        )
+        
+        element_results.append({
+            'element': element,
+            'n_variants': len(preds),
+            'n_high_conf': int(mask_high_el.sum()),
+            'pearson_all': pearson_el,
+            'spearman_all': spearman_el,
+            'pearson_high_conf': pearson_el_hi,
+            'spearman_high_conf': spearman_el_hi,
+        })
+        
         print(
             f"  {element}: n={len(preds):5d}, "
             f"Pearson={pearson_el: .4f}, Spearman={spearman_el: .4f}"
@@ -599,25 +753,73 @@ def main() -> None:
     all_conf_arr = np.asarray(all_conf, dtype=np.float32)
 
     print("\n" + "=" * 80)
-    print("CAGI5 Zero-shot Summary (across all included elements)")
+    print("CAGI5 Zero-shot Summary (average across elements)")
     print("=" * 80)
 
-    # All SNPs
-    pearson_all, spearman_all = compute_correlations(all_preds_arr, all_targets_arr)
-    print(f"All SNPs (n={len(all_preds_arr)}):")
-    print(f"  Pearson r:    {pearson_all: .4f}")
-    print(f"  Spearman rho: {spearman_all: .4f}")
+    # Compute average metrics across elements
+    if element_results:
+        pearson_all = np.nanmean([el['pearson_all'] for el in element_results])
+        spearman_all = np.nanmean([el['spearman_all'] for el in element_results])
+        pearson_hi = np.nanmean([el['pearson_high_conf'] for el in element_results])
+        spearman_hi = np.nanmean([el['spearman_high_conf'] for el in element_results])
+        
+        total_snps = sum(el['n_variants'] for el in element_results)
+        total_high_conf = sum(el['n_high_conf'] for el in element_results)
+    else:
+        pearson_all = spearman_all = pearson_hi = spearman_hi = float('nan')
+        total_snps = total_high_conf = 0
 
-    # High-confidence SNPs (Confidence > 0.1)
+    print(f"All SNPs (n={total_snps} across {len(element_results)} elements):")
+    print(f"  Pearson r:    {pearson_all: .4f} (average across elements)")
+    print(f"  Spearman rho: {spearman_all: .4f} (average across elements)")
+
+    print(f"\nHigh-confidence SNPs (Confidence > 0.1, n={total_high_conf} across {len(element_results)} elements):")
+    print(f"  Pearson r:    {pearson_hi: .4f} (average across elements)")
+    print(f"  Spearman rho: {spearman_hi: .4f} (average across elements)")
+    print("=" * 80)
+    
+    # Save results to CSV
+    results_dir = repo_root / "results" / "cagi5_evaluations"
+    results_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Extract checkpoint name for filename
+    checkpoint_name = Path(args.checkpoint_dir).name
+    
+    # Save summary results
+    summary_results = {
+        'model': 'finetuned_mpra',
+        'cell_type': args.cell_type,
+        'checkpoint': checkpoint_name,
+        'n_elements': len(element_results),
+        'n_all_snps': total_snps,
+        'n_high_conf_snps': total_high_conf,
+        'pearson_all': pearson_all,
+        'spearman_all': spearman_all,
+        'pearson_high_conf': pearson_hi,
+        'spearman_high_conf': spearman_hi,
+    }
+    
+    summary_file = results_dir / f"cagi5_finetuned_{args.cell_type}_{checkpoint_name}_summary.csv"
+    pd.DataFrame([summary_results]).to_csv(summary_file, index=False)
+    print(f"\n✓ Summary results saved to {summary_file}")
+    
+    # Save per-element results
+    element_df = pd.DataFrame(element_results)
+    element_file = results_dir / f"cagi5_finetuned_{args.cell_type}_{checkpoint_name}_per_element.csv"
+    element_df.to_csv(element_file, index=False)
+    print(f"✓ Per-element results saved to {element_file}")
+    
+    # Save detailed predictions (optional, can be large)
     mask_high = all_conf_arr > 0.1
-    pearson_hi, spearman_hi = compute_correlations(
-        all_preds_arr[mask_high],
-        all_targets_arr[mask_high],
-    )
-    print(f"\nHigh-confidence SNPs (Confidence > 0.1, n={int(mask_high.sum())}):")
-    print(f"  Pearson r:    {pearson_hi: .4f}")
-    print(f"  Spearman rho: {spearman_hi: .4f}")
-    print("=" * 80)
+    predictions_df = pd.DataFrame({
+        'prediction': all_preds_arr,
+        'target': all_targets_arr,
+        'confidence': all_conf_arr,
+        'high_conf': mask_high,
+    })
+    predictions_file = results_dir / f"cagi5_finetuned_{args.cell_type}_{checkpoint_name}_predictions.csv"
+    predictions_df.to_csv(predictions_file, index=False)
+    print(f"✓ Detailed predictions saved to {predictions_file}")
 
 
 if __name__ == "__main__":

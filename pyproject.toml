@@ -7,7 +7,7 @@ name = "alphagenome-ft-mpra"
 version = "0.1.0"
 description = "MPRA finetuning application using AlphaGenome"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "aiohttp>=3.13.3",
     "ipykernel>=7.1.0",
@@ -20,6 +20,7 @@ dependencies = [
     # "alphagenome-ft @ git+https://github.com/YOUR_USERNAME/alphagenome_ft.git",
     "wandb>=0.23.1",
     "bio>=1.8.1",
+    "pysam>=0.23.3",
 ]
 
 [tool.setuptools]
