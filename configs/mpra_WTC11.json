@@ -1,0 +1,60 @@
+{
+  "_comment": "Optimal hyperparameters for LentiMPRA WTC11 cell line. Fill in values after benchmarking.",
+  "_source": "Generated from benchmark results",
+  
+  "cell_type": "WTC11",
+  
+  "data": {
+    "batch_size": 32,
+    "random_shift": true,
+    "random_shift_likelihood": 0.5,
+    "reverse_complement": true,
+    "pad_n_bases": 0
+  },
+  
+  "model": {
+    "center_bp": 256,
+    "pooling_type": "flatten",
+    "nl_size": "512,512",
+    "do": 0.5,
+    "activation": "relu"
+  },
+  
+  "training": {
+    "num_epochs": 100,
+    "learning_rate": 0.001,
+    "optimizer": "adam",
+    "weight_decay": 1e-6,
+    "gradient_accumulation_steps": 1,
+    "gradient_clip": null,
+    "lr_scheduler": null,
+    "no_val_split": false,
+    "early_stopping_patience": 5,
+    "val_eval_frequency": 4,
+    "test_eval_frequency": 4
+  },
+  
+  "two_stage": {
+    "enabled": true,
+    "second_stage_lr": 1e-05,
+    "second_stage_epochs": 50
+  },
+  
+  "cached_embeddings": {
+    "use_cached_embeddings": false,
+    "cache_file": null
+  },
+  
+  "checkpointing": {
+    "checkpoint_dir": "./results/models/checkpoints/",
+    "save_full_model": true
+  },
+  
+  "wandb": {
+    "enabled": true,
+    "project": "alphagenome-mpra",
+    "wandb_name": "mpra-WTC11-optimal"
+  },
+  
+  "base_checkpoint_path": null
+}

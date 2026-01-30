@@ -177,46 +177,6 @@ def parse_cagi5_dir(
     return data
 
 
-def get_variant_sequence(
-    ref_seq: str,
-    ref_start: int,
-    var_pos: int,
-    ref_allele: str,
-    alt_allele: str,
-    window: int = 281,
-) -> str | None:
-    """Create variant sequence centered on the variant position (hg19, 1-based)."""
-    idx = var_pos - ref_start
-    if idx < 0 or idx >= len(ref_seq):
-        return None
-
-    ref_in_seq = ref_seq[idx : idx + len(ref_allele)]
-    if ref_in_seq.upper() != ref_allele.upper():
-        pass  # Best-effort check
-
-    var_seq = ref_seq[:idx] + alt_allele + ref_seq[idx + len(ref_allele) :]
-
-    # Extract window centered on the middle of the variant region
-    variant_start = idx
-    variant_end = idx + len(alt_allele)
-    center = (variant_start + variant_end) // 2
-
-    half_window = window // 2
-    start = center - half_window
-    end = start + window
-
-    if start < 0:
-        pad_left = -start
-        seq = "N" * pad_left + var_seq[: window - pad_left]
-    elif end > len(var_seq):
-        pad_right = end - len(var_seq)
-        seq = var_seq[start:] + "N" * pad_right
-    else:
-        seq = var_seq[start:end]
-
-    return seq[:window]
-
-
 def compute_correlations(
     preds: np.ndarray,
     targets: np.ndarray,
@@ -385,9 +345,10 @@ def predict_dnase_for_variant(
         if ref_dnase.size == 0 or alt_dnase.size == 0:
             return float('nan')
         
-        # Pool over center region (384 bp window)
+        # Pool over center region (501 bp window)
+        # 501 matches AlphaGenome central mask approach (see methods in paper - Scoring pipeline overview section 3)
         seq_len = ref_dnase.shape[0]
-        center_window_bp = 384
+        center_window_bp = 501 
         center_window_positions = max(1, center_window_bp)
         window_size = min(center_window_positions, seq_len)
         center_start = max((seq_len - window_size) // 2, 0)

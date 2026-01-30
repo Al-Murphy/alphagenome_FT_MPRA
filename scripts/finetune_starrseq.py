@@ -78,6 +78,7 @@ USAGE EXAMPLES:
 """
 
 import argparse
+import json
 import jax
 import jax.numpy as jnp
 from alphagenome.models import dna_output
@@ -94,10 +95,31 @@ from alphagenome_ft import (
 from src import DeepSTARRHead, DeepSTARRDataset, STARRSeqDataLoader, train
 
 
+def load_config(config_path: str) -> dict:
+    """Load configuration from JSON file."""
+    config_file = Path(config_path)
+    if not config_file.exists():
+        raise FileNotFoundError(f"Config file not found: {config_path}")
+    
+    with open(config_file, 'r') as f:
+        config = json.load(f)
+    
+    return config
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Finetune AlphaGenome with DeepSTARR head on DeepSTARR dataset',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
+    
+    # Config file (load first, then other args can override)
+    parser.add_argument(
+        '--config',
+        type=str,
+        default=None,
+        help='Path to JSON config file with hyperparameters. '
+             'Command-line arguments override config file values.'
     )
     
     # Data parameters
@@ -236,7 +258,7 @@ def main():
         '--weight_decay',
         type=float,
         default=None,
-        help='Weight decay (L2 regularization) for AdamW optimizer (e.g., 1e-6)'
+        help='Weight decay (L2 regularization) for Adam(W) optimizer (e.g., 1e-6)'
     )
     parser.add_argument(
         '--lr_scheduler',
@@ -295,7 +317,13 @@ def main():
         default=None,
         help='Learning rate for Stage 2 (unfreeze encoder). If provided, enables two-stage training: '
              'Stage 1 trains head only, then loads best checkpoint, unfreezes encoder, and continues '
-             'training for num_epochs//2 epochs with this learning rate.'
+             'training for second_stage_epochs with this learning rate.'
+    )
+    parser.add_argument(
+        '--second_stage_epochs',
+        type=int,
+        default=50,
+        help='Number of epochs for Stage 2 training (default: 50). Only used when second_stage_lr is provided.'
     )
     parser.add_argument(
         '--resume_from_stage2',
@@ -323,6 +351,90 @@ def main():
         help='Weights & Biases run name'
     )
     
+    # Two-pass parsing: first get config path, then apply config as defaults
+    # This allows config to provide defaults that command-line args can override
+    temp_args, _ = parser.parse_known_args()
+    
+    # Load config if provided
+    config = None
+    if temp_args.config:
+        print(f"Loading config from: {temp_args.config}")
+        config = load_config(temp_args.config)
+        print("✓ Config loaded")
+    
+    # Apply config values as new defaults for parser
+    if config:
+        if 'data' in config:
+            data_config = config['data']
+            parser.set_defaults(
+                data_path=data_config.get('data_path', './data/deepstarr'),
+                batch_size=data_config.get('batch_size', 32),
+                random_shift=data_config.get('random_shift', True),
+                random_shift_likelihood=data_config.get('random_shift_likelihood', 0.5),
+                max_shift=data_config.get('max_shift', 25),
+                reverse_complement=data_config.get('reverse_complement', True),
+            )
+        
+        if 'model' in config:
+            model_config = config['model']
+            parser.set_defaults(
+                center_bp=model_config.get('center_bp', 256),
+                pooling_type=model_config.get('pooling_type', 'flatten'),
+                nl_size=model_config.get('nl_size', '512,512'),
+                do=model_config.get('do', 0.5),
+                activation=model_config.get('activation', 'relu'),
+            )
+        
+        if 'training' in config:
+            train_config = config['training']
+            parser.set_defaults(
+                num_epochs=train_config.get('num_epochs', 100),
+                learning_rate=train_config.get('learning_rate', 1e-3),
+                optimizer=train_config.get('optimizer', 'adam'),
+                weight_decay=train_config.get('weight_decay', None),
+                gradient_accumulation_steps=train_config.get('gradient_accumulation_steps', 1),
+                gradient_clip=train_config.get('gradient_clip', None),
+                lr_scheduler=train_config.get('lr_scheduler', None),
+                no_val_split=train_config.get('no_val_split', False),
+                early_stopping_patience=train_config.get('early_stopping_patience', 1),
+                val_eval_frequency=train_config.get('val_eval_frequency', 20),
+                test_eval_frequency=train_config.get('test_eval_frequency', 20),
+            )
+        
+        if 'two_stage' in config:
+            two_stage_config = config['two_stage']
+            if two_stage_config.get('enabled', False):
+                parser.set_defaults(
+                    second_stage_lr=two_stage_config.get('second_stage_lr', None),
+                    second_stage_epochs=two_stage_config.get('second_stage_epochs', 50),
+                )
+        
+        if 'cached_embeddings' in config:
+            cache_config = config['cached_embeddings']
+            parser.set_defaults(
+                use_cached_embeddings=cache_config.get('use_cached_embeddings', False),
+                cache_file=cache_config.get('cache_file', None),
+            )
+        
+        if 'checkpointing' in config:
+            checkpoint_config = config['checkpointing']
+            parser.set_defaults(
+                checkpoint_dir=checkpoint_config.get('checkpoint_dir', './results/models/checkpoints/'),
+                save_full_model=checkpoint_config.get('save_full_model', False),
+            )
+        
+        if 'wandb' in config:
+            wandb_config = config['wandb']
+            parser.set_defaults(
+                no_wandb=not wandb_config.get('enabled', True),
+                wandb_project=wandb_config.get('project', 'alphagenome-deepstarr'),
+                wandb_name=wandb_config.get('wandb_name', 'deepstarr-head-encoder'),
+            )
+        
+        if 'base_checkpoint_path' in config:
+            parser.set_defaults(base_checkpoint_path=config.get('base_checkpoint_path', None))
+    
+    # Now parse with updated defaults (command-line args will override config)
     args = parser.parse_args()
     
     # Construct full checkpoint path from base dir and run name
@@ -337,6 +449,8 @@ def main():
     print(f"Batch size:                 {args.batch_size}")
     print(f"Number of epochs:           {args.num_epochs}")
     print(f"Learning rate:              {args.learning_rate}")
+    print(f"Optimizer:                  {args.optimizer}")
+    print(f"Weight decay:               {args.weight_decay if args.weight_decay else 'None'}")
     print(f"Center bp:                  {args.center_bp}")
     print(f"Pooling type:               {args.pooling_type}")
     print(f"Freeze backbone:            {not args.no_freeze_backbone}")
@@ -351,8 +465,8 @@ def main():
             print(f"Resume from Stage 2:        Yes (skipping Stage 1)")
         else:
             print(f"Stage 1 epochs:             {args.num_epochs}")
-        print(f"Stage 2 epochs:              {args.num_epochs // 2}")
-        print(f"Stage 2 learning rate:       {args.second_stage_lr}")
+        print(f"Stage 2 epochs:             {args.second_stage_epochs}")
+        print(f"Stage 2 learning rate:      {args.second_stage_lr}")
     else:
         print(f"Two-stage training:         Disabled")
     print(f"Checkpoint path:            {checkpoint_path}")
@@ -563,6 +677,7 @@ def main():
         val_eval_frequency=args.val_eval_frequency,
         test_eval_frequency=args.test_eval_frequency,
         second_stage_lr=args.second_stage_lr,
+        second_stage_epochs=args.second_stage_epochs,
         resume_from_stage2=args.resume_from_stage2,
         use_wandb=not args.no_wandb,
         wandb_project=args.wandb_project,

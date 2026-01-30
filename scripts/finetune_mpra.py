@@ -72,6 +72,7 @@ USAGE EXAMPLES:
 """
 
 import argparse
+import json
 import jax
 import jax.numpy as jnp
 from alphagenome.models import dna_output
@@ -89,10 +90,105 @@ from src import EncoderMPRAHead, LentiMPRADataset, MPRADataLoader, train
 
 PROMOTER_CONSTRUCT_LENGTH = 281
 
+
+def load_config(config_path: str) -> dict:
+    """Load configuration from JSON file."""
+    config_file = Path(config_path)
+    if not config_file.exists():
+        raise FileNotFoundError(f"Config file not found: {config_path}")
+    
+    with open(config_file, 'r') as f:
+        config = json.load(f)
+    
+    return config
+
+
+def apply_config_to_args(args, config: dict):
+    """Apply config values to args namespace.
+    
+    Note: Command-line arguments will override config values since they're parsed after.
+    This function applies config as defaults that can be overridden.
+    """
+    # Apply top-level config
+    if 'cell_type' in config:
+        args.cell_type = config['cell_type']
+    
+    # Apply data config
+    if 'data' in config:
+        data_config = config['data']
+        args.batch_size = data_config.get('batch_size', args.batch_size)
+        args.random_shift = data_config.get('random_shift', args.random_shift)
+        args.random_shift_likelihood = data_config.get('random_shift_likelihood', args.random_shift_likelihood)
+        args.reverse_complement = data_config.get('reverse_complement', args.reverse_complement)
+        args.pad_n_bases = data_config.get('pad_n_bases', args.pad_n_bases)
+    
+    # Apply model config
+    if 'model' in config:
+        model_config = config['model']
+        args.center_bp = model_config.get('center_bp', args.center_bp)
+        args.pooling_type = model_config.get('pooling_type', args.pooling_type)
+        args.nl_size = model_config.get('nl_size', args.nl_size)
+        args.do = model_config.get('do', args.do)
+        args.activation = model_config.get('activation', args.activation)
+    
+    # Apply training config
+    if 'training' in config:
+        train_config = config['training']
+        args.num_epochs = train_config.get('num_epochs', args.num_epochs)
+        args.learning_rate = train_config.get('learning_rate', args.learning_rate)
+        args.optimizer = train_config.get('optimizer', args.optimizer)
+        args.weight_decay = train_config.get('weight_decay', args.weight_decay)
+        args.gradient_accumulation_steps = train_config.get('gradient_accumulation_steps', args.gradient_accumulation_steps)
+        args.gradient_clip = train_config.get('gradient_clip', args.gradient_clip)
+        args.lr_scheduler = train_config.get('lr_scheduler', args.lr_scheduler)
+        args.no_val_split = train_config.get('no_val_split', args.no_val_split)
+        args.early_stopping_patience = train_config.get('early_stopping_patience', args.early_stopping_patience)
+        args.val_eval_frequency = train_config.get('val_eval_frequency', args.val_eval_frequency)
+        args.test_eval_frequency = train_config.get('test_eval_frequency', args.test_eval_frequency)
+    
+    # Apply two-stage config
+    if 'two_stage' in config:
+        two_stage_config = config['two_stage']
+        if two_stage_config.get('enabled', False):
+            args.second_stage_lr = two_stage_config.get('second_stage_lr', args.second_stage_lr)
+            args.second_stage_epochs = two_stage_config.get('second_stage_epochs', args.second_stage_epochs)
+    
+    # Apply cached embeddings config
+    if 'cached_embeddings' in config:
+        cache_config = config['cached_embeddings']
+        args.use_cached_embeddings = cache_config.get('use_cached_embeddings', args.use_cached_embeddings)
+        args.cache_file = cache_config.get('cache_file', args.cache_file)
+    
+    # Apply checkpointing config
+    if 'checkpointing' in config:
+        checkpoint_config = config['checkpointing']
+        args.checkpoint_dir = checkpoint_config.get('checkpoint_dir', args.checkpoint_dir)
+        args.save_full_model = checkpoint_config.get('save_full_model', args.save_full_model)
+    
+    # Apply wandb config
+    if 'wandb' in config:
+        wandb_config = config['wandb']
+        args.no_wandb = not wandb_config.get('enabled', True)
+        args.wandb_project = wandb_config.get('project', args.wandb_project)
+        args.wandb_name = wandb_config.get('wandb_name', args.wandb_name)
+    
+    # Apply base checkpoint path
+    if 'base_checkpoint_path' in config:
+        args.base_checkpoint_path = config.get('base_checkpoint_path', args.base_checkpoint_path)
+
 def main():
     parser = argparse.ArgumentParser(
         description='Finetune AlphaGenome with MPRA head on LentiMPRA dataset',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
+    
+    # Config file (load first, then other args can override)
+    parser.add_argument(
+        '--config',
+        type=str,
+        default=None,
+        help='Path to JSON config file with hyperparameters. '
+             'Command-line arguments override config file values.'
     )
     
     # Data parameters
@@ -324,6 +420,93 @@ def main():
         help='Weights & Biases run name'
     )
     
+    # Two-pass parsing: first get config path, then apply config as defaults
+    # This allows config to provide defaults that command-line args can override
+    temp_args, _ = parser.parse_known_args()
+    
+    # Load config if provided
+    config = None
+    if temp_args.config:
+        print(f"Loading config from: {temp_args.config}")
+        config = load_config(temp_args.config)
+        print("✓ Config loaded")
+    
+    # Apply config values as new defaults for parser
+    if config:
+        # Update parser defaults with config values
+        if 'cell_type' in config:
+            parser.set_defaults(cell_type=config['cell_type'])
+        
+        if 'data' in config:
+            data_config = config['data']
+            parser.set_defaults(
+                batch_size=data_config.get('batch_size', 32),
+                random_shift=data_config.get('random_shift', True),
+                random_shift_likelihood=data_config.get('random_shift_likelihood', 0.5),
+                reverse_complement=data_config.get('reverse_complement', True),
+                pad_n_bases=data_config.get('pad_n_bases', 0),
+            )
+        
+        if 'model' in config:
+            model_config = config['model']
+            parser.set_defaults(
+                center_bp=model_config.get('center_bp', 256),
+                pooling_type=model_config.get('pooling_type', 'sum'),
+                nl_size=model_config.get('nl_size', '1024'),
+                do=model_config.get('do', None),
+                activation=model_config.get('activation', 'relu'),
+            )
+        
+        if 'training' in config:
+            train_config = config['training']
+            parser.set_defaults(
+                num_epochs=train_config.get('num_epochs', 100),
+                learning_rate=train_config.get('learning_rate', 1e-3),
+                optimizer=train_config.get('optimizer', 'adam'),
+                weight_decay=train_config.get('weight_decay', None),
+                gradient_accumulation_steps=train_config.get('gradient_accumulation_steps', 1),
+                gradient_clip=train_config.get('gradient_clip', None),
+                lr_scheduler=train_config.get('lr_scheduler', None),
+                no_val_split=train_config.get('no_val_split', False),
+                early_stopping_patience=train_config.get('early_stopping_patience', 5),
+                val_eval_frequency=train_config.get('val_eval_frequency', 4),
+                test_eval_frequency=train_config.get('test_eval_frequency', 4),
+            )
+        
+        if 'two_stage' in config:
+            two_stage_config = config['two_stage']
+            if two_stage_config.get('enabled', False):
+                parser.set_defaults(
+                    second_stage_lr=two_stage_config.get('second_stage_lr', None),
+                    second_stage_epochs=two_stage_config.get('second_stage_epochs', 50),
+                )
+        
+        if 'cached_embeddings' in config:
+            cache_config = config['cached_embeddings']
+            parser.set_defaults(
+                use_cached_embeddings=cache_config.get('use_cached_embeddings', False),
+                cache_file=cache_config.get('cache_file', None),
+            )
+        
+        if 'checkpointing' in config:
+            checkpoint_config = config['checkpointing']
+            parser.set_defaults(
+                checkpoint_dir=checkpoint_config.get('checkpoint_dir', './results/models/checkpoints/'),
+                save_full_model=checkpoint_config.get('save_full_model', False),
+            )
+        
+        if 'wandb' in config:
+            wandb_config = config['wandb']
+            parser.set_defaults(
+                no_wandb=not wandb_config.get('enabled', True),
+                wandb_project=wandb_config.get('project', 'alphagenome-mpra'),
+                wandb_name=wandb_config.get('wandb_name', 'mpra-head-encoder'),
+            )
+        
+        if 'base_checkpoint_path' in config:
+            parser.set_defaults(base_checkpoint_path=config.get('base_checkpoint_path', None))
+    
+    # Now parse with updated defaults (command-line args will override config)
     args = parser.parse_args()
     
     # Construct full checkpoint path from base dir, cell type, and run name
@@ -338,6 +521,8 @@ def main():
     print(f"Batch size:                 {args.batch_size}")
     print(f"Number of epochs:           {args.num_epochs}")
     print(f"Learning rate:              {args.learning_rate}")
+    print(f"Optimizer:                  {args.optimizer}")
+    print(f"Weight decay:               {args.weight_decay if args.weight_decay else 'None'}")
     print(f"Center bp:                  {args.center_bp}")
     print(f"Pooling type:               {args.pooling_type}")
     print(f"Freeze backbone:            {not args.no_freeze_backbone}")
