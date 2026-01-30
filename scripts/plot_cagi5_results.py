@@ -2,14 +2,16 @@
 """
 Generate violin plots comparing AG vs AG MPRA models on CAGI5 benchmark.
 
-This script creates two plots:
-1. Comparison by model (AG vs AG MPRA)
-2. Comparison by model and cell line (AG/AG MPRA × K562/HepG2)
+This script creates multiple plots:
+1. Comparison by model (AG vs AG MPRA) - original version
+2. Comparison by model (AG (501bp) vs AG vs AG MPRA) - with 501bp version
+3. Comparison by model and cell line (AG/AG MPRA × K562/HepG2) - original version
+4. Comparison by model and cell line (AG (501bp)/AG/AG MPRA × K562/HepG2) - with 501bp version
 
 Outputs are saved as both PDF and PNG formats.
 
 To note, high confidence SNPs relate tot he significance of the SNP in the MPRA regression model.
-> We deemed a confidence score greater or equal to 0.1 (p-value of 10⁻⁵) indicates that the SNV ‘has an expression effect’.
+> We deemed a confidence score greater or equal to 0.1 (p-value of 10⁻⁵) indicates that the SNV 'has an expression effect'.
 """
 
 import argparse
@@ -37,17 +39,44 @@ def setup_plot_style():
 
 def load_cagi5_data(results_dir):
     """Load CAGI5 per-element results from CSV files."""
+    # Load regular files
     pth = os.path.join(results_dir, "cagi5_*_per_element.csv")
     pths = glob.glob(pth)
     
-    if not pths:
+    # Also load 501 central mask files
+    pth_501 = os.path.join(results_dir, "501_central_mask_cagi5_*_per_element.csv")
+    pths_501 = glob.glob(pth_501)
+    
+    all_pths = pths + pths_501
+    
+    if not all_pths:
         raise FileNotFoundError(f"No CAGI5 per-element CSV files found in {results_dir}")
     
     dat = []
-    for pth in pths:
+    for pth in all_pths:
         dat_i = pd.read_csv(pth)
-        dat_i["model"] = "AG MPRA" if os.path.basename(pth).split("_")[1] == "finetuned" else "AG"
-        dat_i["cell_type"] = os.path.basename(pth).split("_")[2]
+        basename = os.path.basename(pth)
+        
+        # Check if this is a 501 central mask file
+        is_501 = basename.startswith("501_central_mask_")
+        
+        if is_501:
+            # Remove the 501_central_mask_ prefix for parsing
+            basename_clean = basename.replace("501_central_mask_", "")
+            parts = basename_clean.split("_")
+            if parts[1] == "base":
+                dat_i["model"] = "AG (501bp)"
+                dat_i["cell_type"] = parts[2]
+            else:
+                # Shouldn't happen, but handle gracefully
+                dat_i["model"] = "AG MPRA"
+                dat_i["cell_type"] = parts[2] if len(parts) > 2 else "Unknown"
+        else:
+            # Regular file parsing
+            parts = basename.split("_")
+            dat_i["model"] = "AG MPRA" if parts[1] == "finetuned" else "AG"
+            dat_i["cell_type"] = parts[2]
+        
         dat.append(dat_i)
     
     dat = pd.concat(dat, ignore_index=True)
@@ -80,15 +109,36 @@ def prepare_data(dat):
     return dat_long
 
 
-def plot_by_model(dat_long, pal, figsize=(10, 5)):
-    """Create violin plot comparing AG vs AG MPRA (aggregated across cell types)."""
+def plot_by_model(dat_long, pal, include_501bp=True, figsize=(12, 5)):
+    """Create violin plot comparing AG vs AG (501bp) vs AG MPRA (aggregated across cell types).
+    
+    Args:
+        dat_long: Long-format data for plotting
+        pal: Color palette
+        include_501bp: If True, include AG (501bp) model; if False, only AG and AG MPRA
+        figsize: Figure size tuple
+    """
     fig, axes = plt.subplots(1, 2, figsize=figsize)
     snp_types = ['All SNPs', 'High Confidence SNPs']
-    model_order = ['AG', 'AG MPRA']
+    
+    if include_501bp:
+        model_order = ['AG (501bp)', 'AG', 'AG MPRA']
+    else:
+        model_order = ['AG', 'AG MPRA']
+    
+    # Color mapping for models
+    model_colors = {
+        'AG': pal[3],
+        'AG (501bp)': pal[0],  # Different shade for 501bp version
+        'AG MPRA': pal[4]
+    }
     
     for idx, snp_type in enumerate(snp_types):
         ax = axes[idx]
         data_subset = dat_long[dat_long['snp_type'] == snp_type]
+        
+        # Filter to only include models that exist in the data
+        available_models = [m for m in model_order if m in data_subset['model'].values]
         
         # Create violin plot with explicit order
         sns.violinplot(
@@ -96,8 +146,8 @@ def plot_by_model(dat_long, pal, figsize=(10, 5)):
             x='model',
             y='pearson_r',
             ax=ax,
-            order=model_order,
-            palette={'AG': pal[3], 'AG MPRA': pal[4]},
+            order=available_models,
+            palette={m: model_colors[m] for m in available_models},
             inner=None,
             alpha=0.8
         )
@@ -113,8 +163,10 @@ def plot_by_model(dat_long, pal, figsize=(10, 5)):
         title_parts = [f'{snp_type}', f'N={n_total} SNPs, {n_elements} regulatory elements']
         
         # Add individual regulatory element dots using actual x positions
-        for model in model_order:
+        for model in available_models:
             model_data = data_subset[data_subset['model'] == model]
+            if len(model_data) == 0:
+                continue
             x_pos = model_to_xpos[model]
             # Add jitter
             jitter = np.random.normal(0, 0.035, len(model_data))
@@ -126,12 +178,12 @@ def plot_by_model(dat_long, pal, figsize=(10, 5)):
                 edgecolors='black',
                 linewidth=1,
                 zorder=10,
-                color=pal[4] if model == 'AG MPRA' else pal[3]
+                color=model_colors[model]
             )
             
             # Add mean Pearson r as a horizontal line segment
             mean_pearson = model_data['pearson_r'].mean()
-            line_color = pal[4] if model == 'AG MPRA' else pal[3]
+            line_color = model_colors[model]
             ax.plot(
                 [x_pos - 0.25, x_pos + 0.25],
                 [mean_pearson, mean_pearson],
@@ -144,7 +196,7 @@ def plot_by_model(dat_long, pal, figsize=(10, 5)):
             # Add mean value as text
             ax.text(
                 x_pos,
-                mean_pearson - 0.35,
+                mean_pearson - 0.4,
                 f'μ={mean_pearson:.3f}',
                 ha='center',
                 va='bottom',
@@ -164,8 +216,15 @@ def plot_by_model(dat_long, pal, figsize=(10, 5)):
     return fig
 
 
-def plot_by_model_and_cell(dat_long, pal, figsize=(16, 6)):
-    """Create violin plot comparing AG vs AG MPRA split by cell line."""
+def plot_by_model_and_cell(dat_long, pal, include_501bp=True, figsize=(20, 6)):
+    """Create violin plot comparing AG vs AG (501bp) vs AG MPRA split by cell line.
+    
+    Args:
+        dat_long: Long-format data for plotting
+        pal: Color palette
+        include_501bp: If True, include AG (501bp) model; if False, only AG and AG MPRA
+        figsize: Figure size tuple
+    """
     # Create a combined label for model and cell type
     dat_long = dat_long.copy()
     dat_long['model_cell'] = dat_long['model'] + ' (' + dat_long['cell_type'] + ')'
@@ -173,12 +232,41 @@ def plot_by_model_and_cell(dat_long, pal, figsize=(16, 6)):
     fig, axes = plt.subplots(1, 2, figsize=figsize)
     snp_types = ['All SNPs', 'High Confidence SNPs']
     
-    # Define order: AG (K562), AG MPRA (K562), AG (HepG2), AG MPRA (HepG2)
-    model_cell_order = ['AG (K562)', 'AG MPRA (K562)', 'AG (HepG2)', 'AG MPRA (HepG2)']
+    if include_501bp:
+        # Define order: AG (501bp) (K562), AG (K562), AG MPRA (K562), AG (501bp) (HepG2), AG (HepG2), AG MPRA (HepG2)
+        model_cell_order = [
+            'AG (501bp) (K562)',
+            'AG (K562)', 
+            'AG MPRA (K562)', 
+            'AG (501bp) (HepG2)',
+            'AG (HepG2)', 
+            'AG MPRA (HepG2)'
+        ]
+    else:
+        # Define order: AG (K562), AG MPRA (K562), AG (HepG2), AG MPRA (HepG2)
+        model_cell_order = [
+            'AG (K562)', 
+            'AG MPRA (K562)', 
+            'AG (HepG2)', 
+            'AG MPRA (HepG2)'
+        ]
+    
+    # Color mapping for model-cell combinations
+    model_cell_colors = {
+        'AG (K562)': pal[3],
+        'AG (501bp) (K562)': pal[0],
+        'AG MPRA (K562)': pal[4],
+        'AG (HepG2)': pal[3],
+        'AG (501bp) (HepG2)': pal[0],
+        'AG MPRA (HepG2)': pal[4]
+    }
     
     for idx, snp_type in enumerate(snp_types):
         ax = axes[idx]
         data_subset = dat_long[dat_long['snp_type'] == snp_type]
+        
+        # Filter to only include model-cell combinations that exist in the data
+        available_model_cells = [mc for mc in model_cell_order if mc in data_subset['model_cell'].values]
         
         # Create violin plot with explicit order
         sns.violinplot(
@@ -186,13 +274,8 @@ def plot_by_model_and_cell(dat_long, pal, figsize=(16, 6)):
             x='model_cell',
             y='pearson_r',
             ax=ax,
-            order=model_cell_order,
-            palette={
-                'AG (K562)': pal[3],
-                'AG MPRA (K562)': pal[4],
-                'AG (HepG2)': pal[3],
-                'AG MPRA (HepG2)': pal[4]
-            },
+            order=available_model_cells,
+            palette={mc: model_cell_colors[mc] for mc in available_model_cells},
             inner=None,
             alpha=0.8
         )
@@ -208,7 +291,7 @@ def plot_by_model_and_cell(dat_long, pal, figsize=(16, 6)):
         title_parts = [f'{snp_type}', f'N={n_total} SNPs, {n_elements} regulatory elements']
         
         # Add individual regulatory element dots using actual x positions
-        for model_cell in model_cell_order:
+        for model_cell in available_model_cells:
             model_cell_data = data_subset[data_subset['model_cell'] == model_cell]
             if len(model_cell_data) == 0:
                 continue
@@ -223,12 +306,12 @@ def plot_by_model_and_cell(dat_long, pal, figsize=(16, 6)):
                 edgecolors='black',
                 linewidth=1,
                 zorder=10,
-                color=pal[4] if 'AG MPRA' in model_cell else pal[3]
+                color=model_cell_colors[model_cell]
             )
             
             # Add mean Pearson r as a horizontal line segment
             mean_pearson = model_cell_data['pearson_r'].mean()
-            line_color = pal[4] if 'AG MPRA' in model_cell else pal[3]
+            line_color = model_cell_colors[model_cell]
             ax.plot(
                 [x_pos - 0.25, x_pos + 0.25],
                 [mean_pearson, mean_pearson],
@@ -323,7 +406,7 @@ def main():
         nargs=2,
         default=[10, 5],
         metavar=('WIDTH', 'HEIGHT'),
-        help='Figure size for model comparison plot (width, height)'
+        help='Figure size for model comparison plot without 501bp (width, height). With 501bp uses 12x5.'
     )
     parser.add_argument(
         '--figsize_cell',
@@ -331,7 +414,7 @@ def main():
         nargs=2,
         default=[16, 6],
         metavar=('WIDTH', 'HEIGHT'),
-        help='Figure size for model+cell comparison plot (width, height)'
+        help='Figure size for model+cell comparison plot without 501bp (width, height). With 501bp uses 20x6.'
     )
     parser.add_argument(
         '--skip_model_plot',
@@ -373,10 +456,11 @@ def main():
     print(f"✓ Prepared {len(dat_long)} data points")
     print()
     
-    # Generate plots
+    # Generate plots - both with and without 501bp version
     if not args.skip_model_plot:
-        print("Generating model comparison plot...")
-        fig_model = plot_by_model(dat_long, pal, figsize=tuple(args.figsize_model))
+        # Version without 501bp (original)
+        print("Generating model comparison plot (without 501bp)...")
+        fig_model = plot_by_model(dat_long, pal, include_501bp=False, figsize=tuple(args.figsize_model))
         save_plots(
             fig_model,
             output_dir / 'cagi5_model_comparison',
@@ -385,10 +469,23 @@ def main():
         )
         plt.close(fig_model)
         print()
+        
+        # Version with 501bp
+        print("Generating model comparison plot (with 501bp)...")
+        fig_model_501 = plot_by_model(dat_long, pal, include_501bp=True, figsize=(12, 5))
+        save_plots(
+            fig_model_501,
+            output_dir / 'cagi5_model_comparison_with_501bp',
+            dpi=args.dpi,
+            formats=args.formats
+        )
+        plt.close(fig_model_501)
+        print()
     
     if not args.skip_cell_plot:
-        print("Generating model+cell comparison plot...")
-        fig_cell = plot_by_model_and_cell(dat_long, pal, figsize=tuple(args.figsize_cell))
+        # Version without 501bp (original)
+        print("Generating model+cell comparison plot (without 501bp)...")
+        fig_cell = plot_by_model_and_cell(dat_long, pal, include_501bp=False, figsize=tuple(args.figsize_cell))
         save_plots(
             fig_cell,
             output_dir / 'cagi5_model_cell_comparison',
@@ -396,6 +493,18 @@ def main():
             formats=args.formats
         )
         plt.close(fig_cell)
+        print()
+        
+        # Version with 501bp
+        print("Generating model+cell comparison plot (with 501bp)...")
+        fig_cell_501 = plot_by_model_and_cell(dat_long, pal, include_501bp=True, figsize=(20, 6))
+        save_plots(
+            fig_cell_501,
+            output_dir / 'cagi5_model_cell_comparison_with_501bp',
+            dpi=args.dpi,
+            formats=args.formats
+        )
+        plt.close(fig_cell_501)
         print()
     
     print("=" * 80)

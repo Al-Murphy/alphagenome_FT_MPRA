@@ -278,8 +278,8 @@ class EnformerMPRALightning(pl.LightningModule):
         with torch.no_grad():
             pearson = self._pearson_corr(y_pred, y)
         
-        self.log('test_loss', loss, on_step=False, on_epoch=True)
-        self.log('test_pearson', pearson, on_step=False, on_epoch=True)
+        self.log('test_loss', loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
+        self.log('test_pearson', pearson, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         return loss
     
     def _pearson_corr(self, x, y):
@@ -445,7 +445,7 @@ def main():
     parser.add_argument('--weight_decay', type=float, default=None)
     parser.add_argument('--gradient_clip', type=float, default=None)
     parser.add_argument('--lr_scheduler', type=str, default=None, choices=['plateau', 'cosine'])
-    parser.add_argument('--second_stage_lr', type=float, default=None)
+    parser.add_argument('--second_stage_lr', type=float, default=1e-5)
     parser.add_argument('--second_stage_epochs', type=int, default=50)
     parser.add_argument('--early_stopping_patience', type=int, default=5)
     parser.add_argument('--checkpoint_dir', type=str, default='./results/models/checkpoints/enformer/')
@@ -643,7 +643,17 @@ def main():
     print("\n" + "="*80)
     print("Evaluating on Test Set")
     print("="*80)
-    trainer.test(model, data_module)
+    
+    # Run test - metrics should be logged automatically via self.log() in test_step
+    test_results = trainer.test(model, data_module)
+    
+    # Explicitly log test metrics to WandB if logger is available
+    # This ensures test metrics appear in WandB even if automatic logging missed them
+    if logger is not None and test_results and len(test_results) > 0:
+        # Extract test metrics and log them with explicit step
+        test_metrics = test_results[0]  # Get first (and usually only) result dict
+        # Log with current step to ensure they appear in the right place
+        logger.log_metrics(test_metrics, step=trainer.global_step)
     
     print("\n" + "="*80)
     print("Training Complete!")

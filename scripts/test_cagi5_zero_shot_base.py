@@ -20,17 +20,26 @@ Key behaviors:
     2) High-confidence SNPs (Confidence > 0.1)
 - Uses hg19 reference sequences and 1-based genomic coordinates (converted to
   0-based for AlphaGenome's API).
-- Predictions are computed as log2(sum_alt / sum_ref) over center 384 bp window.
+- Predictions are computed as log2(sum_alt / sum_ref) over a configurable center window
+  (default: 384 bp, can be set to 501 bp for AlphaGenome's recommended central mask size).
 
 To note, high confidence SNPs relate tot he significance of the SNP in the MPRA regression model.
-> We deemed a confidence score greater or equal to 0.1 (p-value of 10⁻⁵) indicates that the SNV ‘has an expression effect’.
+> We deemed a confidence score greater or equal to 0.1 (p-value of 10⁻⁵) indicates that the SNV 'has an expression effect'.
+
+Also note, we tried the variant effect approach recommended by AlphaGenome in Supplementary table 9 (501 bp central mask),
+but found decreasing the central mask on the output window from 501 bp to 384 bp led to substantially better performance.
+Use --center_window_bp 501 to use AlphaGenome's recommended approach.
 
 Prerequisites:
 - Run `scripts/fetch_cagi5_references.py` to download hg19 reference sequences.
 - Place CAGI5 challenge_*.tsv files in ./data/cagi5/
 
 Example:
+    # Default (384 bp center window):
     python scripts/test_cagi5_zero_shot_base.py --cell_type K562
+    
+    # Use AlphaGenome's recommended 501 bp central mask:
+    python scripts/test_cagi5_zero_shot_base.py --cell_type K562 --center_window_bp 501
 """
 
 from __future__ import annotations
@@ -49,6 +58,51 @@ from alphagenome.models import dna_output
 from alphagenome_research.model import dna_model
 
 from src.seq_loader import seq_loader  # type: ignore
+
+
+# ---------------------------------------------------------------------------
+# Augmentation utilities
+# ---------------------------------------------------------------------------
+
+def reverse_complement_dna(seq: str) -> str:
+    """Get the reverse complement of a DNA sequence string.
+    
+    Args:
+        seq: DNA sequence string.
+        
+    Returns:
+        Reverse complement of the sequence.
+    """
+    complement_map = {'A': 'T', 'T': 'A', 'C': 'G', 'G': 'C', 'N': 'N'}
+    return ''.join(complement_map.get(base, 'N') for base in reversed(seq.upper()))
+
+
+def get_random_position_shifts(max_shift: int = 20, n_samples: int = 3, random_seed: int | None = None) -> List[int]:
+    """Get randomly sampled position shifts for augmentation.
+    
+    Args:
+        max_shift: Maximum shift in base pairs (default: 20).
+        n_samples: Number of random shifts to sample (default: 3).
+        random_seed: Random seed for reproducibility (default: None).
+        
+    Returns:
+        List of shift values including 0 (no shift) and n_samples randomly sampled shifts from ±1 to ±max_shift.
+    """
+    if random_seed is not None:
+        np.random.seed(random_seed)
+    
+    shifts = [0]  # Always include original position
+    
+    # Sample n_samples shifts from ±1 to ±max_shift
+    all_possible_shifts = []
+    for shift in range(1, max_shift + 1):
+        all_possible_shifts.extend([shift, -shift])
+    
+    if len(all_possible_shifts) > 0:
+        sampled = np.random.choice(all_possible_shifts, size=min(n_samples, len(all_possible_shifts)), replace=False)
+        shifts.extend(sampled.tolist())
+    
+    return shifts
 
 
 # ---------------------------------------------------------------------------
@@ -249,11 +303,18 @@ def predict_dnase_for_variant(
     alt_allele: str,
     cell_type: str,
     interval_size: int,
+    center_window_bp: int = 384,
+    use_position_shift: bool = False,
+    max_shift: int = 20,
+    n_shift_samples: int = 3,
+    random_seed: int | None = None,
+    use_reverse_complement: bool = False,
 ) -> float:
     """Predict DNase for a single variant using hg19 sequences from seq_loader.
     
     Uses seq_loader to extract hg19 sequences, creates reference and alternate
-    sequences, then uses AlphaGenome's predict_sequence.
+    sequences, then uses AlphaGenome's predict_sequence. Supports inference-time
+    augmentation via position shifting and reverse complement.
     
     Args:
         model: Base AlphaGenome model.
@@ -264,9 +325,15 @@ def predict_dnase_for_variant(
         alt_allele: Alternate allele.
         cell_type: Cell type ('HepG2' or 'K562').
         interval_size: Size of interval around variant (default: 1048576 bp).
+        center_window_bp: Size of center window for pooling predictions (default: 384 bp).
+        use_position_shift: If True, average predictions over randomly sampled position shifts.
+        max_shift: Maximum position shift in base pairs (default: 20).
+        n_shift_samples: Number of random shifts to sample (default: 3).
+        random_seed: Random seed for shift sampling (default: None).
+        use_reverse_complement: If True, always average predictions over forward and reverse complement.
         
     Returns:
-        Scalar DNase prediction: log2(sum_alt / sum_ref) over center 384 bp window.
+        Scalar DNase prediction: log2(sum_alt / sum_ref) over center window, averaged over augmentations.
     """
     from alphagenome.data import ontology
     
@@ -282,92 +349,128 @@ def predict_dnase_for_variant(
     ontology_term_str = cell_type_to_ontology[cell_type]
     ontology_term = ontology.from_curie(ontology_term_str)
     
+    # Determine augmentation strategies
+    # Use variant position as part of seed for reproducibility but different shifts per variant
+    variant_seed = (random_seed + var_pos) if random_seed is not None else None
+    if use_position_shift:
+        position_shifts = get_random_position_shifts(max_shift, n_shift_samples, variant_seed)
+    else:
+        position_shifts = [0]
+    strands = [False, True] if use_reverse_complement else [False]
+    
+    all_predictions: List[float] = []
+    
     try:
-        # Extract hg19 reference sequence centered on variant
-        # pysam uses 0-based, half-open intervals
-        half_interval = interval_size // 2
-        start_0based = max(0, var_pos - 1 - half_interval)
-        end_0based = start_0based + interval_size
+        for shift in position_shifts:
+            shifted_var_pos = var_pos + shift
+            
+            for use_rc in strands:
+                # Extract hg19 reference sequence centered on (possibly shifted) variant
+                # pysam uses 0-based, half-open intervals
+                half_interval = interval_size // 2
+                start_0based = max(0, shifted_var_pos - 1 - half_interval)
+                end_0based = start_0based + interval_size
+                
+                # Get reference sequence from hg19
+                ref_seq = seq_loader_obj.genome_dat.fetch(chromosome, start_0based, end_0based).upper()
+                
+                # Verify ref allele matches (only check for original position, not shifted)
+                variant_pos_in_seq = (shifted_var_pos - 1) - start_0based
+                if variant_pos_in_seq < 0 or variant_pos_in_seq + len(ref_allele) > len(ref_seq):
+                    if shift == 0:  # Only warn for original position
+                        print(f"  Warning: Variant position {var_pos} out of bounds for interval")
+                    continue
+                
+                # For shifted positions, we still need to verify the ref allele matches
+                # (though it might not for large shifts, so we'll be lenient)
+                ref_in_seq = ref_seq[variant_pos_in_seq : variant_pos_in_seq + len(ref_allele)]
+                if shift == 0 and ref_in_seq.upper() != ref_allele.upper():
+                    # Check if it's a complement (suggests strand/coordinate issue)
+                    complement_map = {'A': 'T', 'T': 'A', 'C': 'G', 'G': 'C'}
+                    is_complement = (
+                        len(ref_allele) == 1 and 
+                        len(ref_in_seq) == 1 and
+                        complement_map.get(ref_allele.upper()) == ref_in_seq.upper()
+                    )
+                    complement_note = " (complement - possible strand/coordinate issue)" if is_complement else ""
+                    print(f"  Warning: Ref allele mismatch at {chromosome}:{var_pos}: "
+                          f"expected {ref_allele}, got {ref_in_seq}{complement_note}")
+                    continue
+                
+                # Create alternate sequence
+                alt_seq = (
+                    ref_seq[:variant_pos_in_seq] +
+                    alt_allele +
+                    ref_seq[variant_pos_in_seq + len(ref_allele):]
+                )
+                
+                # Apply reverse complement if needed
+                if use_rc:
+                    ref_seq = reverse_complement_dna(ref_seq)
+                    alt_seq = reverse_complement_dna(alt_seq)
+                
+                # Use AlphaGenome's predict_sequence for both ref and alt
+                ref_output = model.predict_sequence(
+                    ref_seq,
+                    organism=dna_model.Organism.HOMO_SAPIENS,
+                    requested_outputs=[dna_output.OutputType.DNASE],
+                    ontology_terms=[ontology_term],
+                )
+                
+                alt_output = model.predict_sequence(
+                    alt_seq,
+                    organism=dna_model.Organism.HOMO_SAPIENS,
+                    requested_outputs=[dna_output.OutputType.DNASE],
+                    ontology_terms=[ontology_term],
+                )
+                
+                # Get both reference and alternate predictions
+                if ref_output.dnase is None or alt_output.dnase is None:
+                    continue
+                
+                # Extract DNase predictions: shape (seq_len, num_tracks)
+                ref_dnase = ref_output.dnase.values  # numpy array
+                alt_dnase = alt_output.dnase.values  # numpy array
+                
+                if ref_dnase.size == 0 or alt_dnase.size == 0:
+                    continue
+                
+                # Pool over center region, centered on the (possibly shifted) variant position
+                # 501 matches AlphaGenome central mask approach (see methods in paper - Scoring pipeline overview section 3 and supp table 9)
+                # 384 bp was found to give better performance than 501 bp
+                seq_len = ref_dnase.shape[0]
+                
+                # Center the mask on the variant position within the sequence
+                # variant_pos_in_seq is the position of the variant within the extracted sequence
+                half_window = center_window_bp // 2
+                center_start = max(0, variant_pos_in_seq - half_window)
+                center_end = min(seq_len, variant_pos_in_seq + half_window + (center_window_bp % 2))
+                window_size = center_end - center_start
+                
+                # Skip if window is too small (variant too close to edge)
+                if window_size < center_window_bp // 2:
+                    continue
+                
+                center_ref = ref_dnase[center_start:center_end, :]  # (window_size, num_tracks)
+                center_alt = alt_dnase[center_start:center_end, :]  # (window_size, num_tracks)
+                
+                # Sum over sequence positions and tracks
+                sum_ref = float(np.sum(center_ref))
+                sum_alt = float(np.sum(center_alt))
+                
+                # Compute log2(sum_alt / sum_ref)
+                if sum_ref <= 0:
+                    continue
+                
+                ratio = sum_alt / sum_ref
+                scalar_pred = float(np.log2(ratio))
+                all_predictions.append(scalar_pred)
         
-        # Get reference sequence from hg19
-        ref_seq = seq_loader_obj.genome_dat.fetch(chromosome, start_0based, end_0based).upper()
-        
-        # Verify ref allele matches
-        variant_pos_in_seq = (var_pos - 1) - start_0based
-        if variant_pos_in_seq < 0 or variant_pos_in_seq + len(ref_allele) > len(ref_seq):
-            print(f"  Warning: Variant position {var_pos} out of bounds for interval")
+        # Average over all augmentations
+        if len(all_predictions) == 0:
             return float('nan')
         
-        ref_in_seq = ref_seq[variant_pos_in_seq : variant_pos_in_seq + len(ref_allele)]
-        if ref_in_seq.upper() != ref_allele.upper():
-            # Check if it's a complement (suggests strand/coordinate issue)
-            complement_map = {'A': 'T', 'T': 'A', 'C': 'G', 'G': 'C'}
-            is_complement = (
-                len(ref_allele) == 1 and 
-                len(ref_in_seq) == 1 and
-                complement_map.get(ref_allele.upper()) == ref_in_seq.upper()
-            )
-            complement_note = " (complement - possible strand/coordinate issue)" if is_complement else ""
-            print(f"  Warning: Ref allele mismatch at {chromosome}:{var_pos}: "
-                  f"expected {ref_allele}, got {ref_in_seq}{complement_note}")
-            return float('nan')
-        
-        # Create alternate sequence
-        alt_seq = (
-            ref_seq[:variant_pos_in_seq] +
-            alt_allele +
-            ref_seq[variant_pos_in_seq + len(ref_allele):]
-        )
-        
-        # Use AlphaGenome's predict_sequence for both ref and alt
-        ref_output = model.predict_sequence(
-            ref_seq,
-            organism=dna_model.Organism.HOMO_SAPIENS,
-            requested_outputs=[dna_output.OutputType.DNASE],
-            ontology_terms=[ontology_term],
-        )
-        
-        alt_output = model.predict_sequence(
-            alt_seq,
-            organism=dna_model.Organism.HOMO_SAPIENS,
-            requested_outputs=[dna_output.OutputType.DNASE],
-            ontology_terms=[ontology_term],
-        )
-        
-        # Get both reference and alternate predictions
-        if ref_output.dnase is None or alt_output.dnase is None:
-            return float('nan')
-        
-        # Extract DNase predictions: shape (seq_len, num_tracks)
-        ref_dnase = ref_output.dnase.values  # numpy array
-        alt_dnase = alt_output.dnase.values  # numpy array
-        
-        if ref_dnase.size == 0 or alt_dnase.size == 0:
-            return float('nan')
-        
-        # Pool over center region (501 bp window)
-        # 501 matches AlphaGenome central mask approach (see methods in paper - Scoring pipeline overview section 3)
-        seq_len = ref_dnase.shape[0]
-        center_window_bp = 501 
-        center_window_positions = max(1, center_window_bp)
-        window_size = min(center_window_positions, seq_len)
-        center_start = max((seq_len - window_size) // 2, 0)
-        center_end = center_start + window_size
-        
-        center_ref = ref_dnase[center_start:center_end, :]  # (window_size, num_tracks)
-        center_alt = alt_dnase[center_start:center_end, :]  # (window_size, num_tracks)
-        
-        # Sum over sequence positions and tracks
-        sum_ref = float(np.sum(center_ref))
-        sum_alt = float(np.sum(center_alt))
-        
-        # Compute log2(sum_alt / sum_ref)
-        if sum_ref <= 0:
-            return float('nan')
-        
-        ratio = sum_alt / sum_ref
-        scalar_pred = float(np.log2(ratio))
-        return scalar_pred
+        return float(np.mean(all_predictions))
         
     except Exception as e:
         print(f"  Warning: Error predicting variant at {chromosome}:{var_pos}: {e}")
@@ -413,6 +516,40 @@ def main() -> None:
         default=64,  # Smaller batch size for base model (more memory intensive)
         help="Batch size for inference (default: 64)",
     )
+    parser.add_argument(
+        "--center_window_bp",
+        type=int,
+        default=384,
+        help="Size of center window (in bp) for pooling DNase predictions (default: 384). Use 501 for AlphaGenome's recommended central mask size.",
+    )
+    parser.add_argument(
+        "--use_position_shift",
+        action='store_true',
+        help="Enable position shift augmentation: average predictions over shifts up to ±20 bp around the variant position.",
+    )
+    parser.add_argument(
+        "--max_shift",
+        type=int,
+        default=20,
+        help="Maximum position shift in base pairs for augmentation (default: 20). Only used if --use_position_shift is set.",
+    )
+    parser.add_argument(
+        "--n_shift_samples",
+        type=int,
+        default=3,
+        help="Number of random position shifts to sample per variant (default: 3). Only used if --use_position_shift is set.",
+    )
+    parser.add_argument(
+        "--random_seed",
+        type=int,
+        default=None,
+        help="Random seed for position shift sampling (default: None).",
+    )
+    parser.add_argument(
+        "--use_reverse_complement",
+        action='store_true',
+        help="Enable reverse complement augmentation: always average predictions over forward and reverse complement sequences.",
+    )
 
     args = parser.parse_args()
 
@@ -444,6 +581,9 @@ def main() -> None:
     print(f"CAGI5 dir:           {cagi5_dir}")
     print(f"Genome build:        hg19 (via seq_loader)")
     print(f"Interval size:       {args.interval_size} bp")
+    print(f"Center window:       {args.center_window_bp} bp")
+    print(f"Position shift aug:   {args.use_position_shift} (max: {args.max_shift} bp, n_samples: {args.n_shift_samples})")
+    print(f"Reverse comp aug:   {args.use_reverse_complement}")
     print(f"Batch size:          {args.batch_size}")
     print("=" * 80)
     print()
@@ -509,6 +649,12 @@ def main() -> None:
                 alt_allele=alt_allele,
                 cell_type=args.cell_type,
                 interval_size=args.interval_size,
+                center_window_bp=args.center_window_bp,
+                use_position_shift=args.use_position_shift,
+                max_shift=args.max_shift,
+                n_shift_samples=args.n_shift_samples,
+                random_seed=args.random_seed,
+                use_reverse_complement=args.use_reverse_complement,
             )
             
             if np.isnan(pred):
@@ -591,11 +737,35 @@ def main() -> None:
     results_dir = repo_root / "results" / "cagi5_evaluations"
     results_dir.mkdir(parents=True, exist_ok=True)
     
+    # Determine filename prefix based on center window size and augmentations
+    prefix_parts = []
+    
+    # Center window prefix
+    if args.center_window_bp == 501:
+        prefix_parts.append("501_central_mask")
+    
+    # Augmentation prefixes
+    if args.use_position_shift:
+        prefix_parts.append(f"posshift{args.max_shift}_n{args.n_shift_samples}")
+    if args.use_reverse_complement:
+        prefix_parts.append("revcomp")
+    
+    # Base prefix
+    if prefix_parts:
+        file_prefix = "_".join(prefix_parts) + f"_cagi5_base_{args.cell_type}"
+    else:
+        file_prefix = f"cagi5_base_{args.cell_type}"
+    
     # Save summary results
     summary_results = {
         'model': 'base_alphagenome',
         'cell_type': args.cell_type,
         'model_version': args.model_version,
+        'center_window_bp': args.center_window_bp,
+        'use_position_shift': args.use_position_shift,
+        'max_shift': args.max_shift if args.use_position_shift else None,
+        'n_shift_samples': args.n_shift_samples if args.use_position_shift else None,
+        'use_reverse_complement': args.use_reverse_complement,
         'n_elements': len(element_results),
         'n_all_snps': total_snps,
         'n_high_conf_snps': total_high_conf,
@@ -605,13 +775,13 @@ def main() -> None:
         'spearman_high_conf': spearman_hi,
     }
     
-    summary_file = results_dir / f"cagi5_base_{args.cell_type}_summary.csv"
+    summary_file = results_dir / f"{file_prefix}_summary.csv"
     pd.DataFrame([summary_results]).to_csv(summary_file, index=False)
     print(f"\n✓ Summary results saved to {summary_file}")
     
     # Save per-element results
     element_df = pd.DataFrame(element_results)
-    element_file = results_dir / f"cagi5_base_{args.cell_type}_per_element.csv"
+    element_file = results_dir / f"{file_prefix}_per_element.csv"
     element_df.to_csv(element_file, index=False)
     print(f"✓ Per-element results saved to {element_file}")
     
@@ -623,7 +793,7 @@ def main() -> None:
         'confidence': all_conf_arr,
         'high_conf': mask_high,
     })
-    predictions_file = results_dir / f"cagi5_base_{args.cell_type}_predictions.csv"
+    predictions_file = results_dir / f"{file_prefix}_predictions.csv"
     predictions_df.to_csv(predictions_file, index=False)
     print(f"✓ Detailed predictions saved to {predictions_file}")
 

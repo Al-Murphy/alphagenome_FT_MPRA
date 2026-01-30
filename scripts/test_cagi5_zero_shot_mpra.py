@@ -70,6 +70,51 @@ PROMOTER_CONSTRUCT_LENGTH = 281  # same init_seq_len as finetune_mpra.py
 
 
 # ---------------------------------------------------------------------------
+# Augmentation utilities
+# ---------------------------------------------------------------------------
+
+def reverse_complement_dna(seq: str) -> str:
+    """Get the reverse complement of a DNA sequence string.
+    
+    Args:
+        seq: DNA sequence string.
+        
+    Returns:
+        Reverse complement of the sequence.
+    """
+    complement_map = {'A': 'T', 'T': 'A', 'C': 'G', 'G': 'C', 'N': 'N'}
+    return ''.join(complement_map.get(base, 'N') for base in reversed(seq.upper()))
+
+
+def get_random_position_shifts(max_shift: int = 20, n_samples: int = 3, random_seed: int | None = None) -> List[int]:
+    """Get randomly sampled position shifts for augmentation.
+    
+    Args:
+        max_shift: Maximum shift in base pairs (default: 20).
+        n_samples: Number of random shifts to sample (default: 3).
+        random_seed: Random seed for reproducibility (default: None).
+        
+    Returns:
+        List of shift values including 0 (no shift) and n_samples randomly sampled shifts from ±1 to ±max_shift.
+    """
+    if random_seed is not None:
+        np.random.seed(random_seed)
+    
+    shifts = [0]  # Always include original position
+    
+    # Sample n_samples shifts from ±1 to ±max_shift
+    all_possible_shifts = []
+    for shift in range(1, max_shift + 1):
+        all_possible_shifts.extend([shift, -shift])
+    
+    if len(all_possible_shifts) > 0:
+        sampled = np.random.choice(all_possible_shifts, size=min(n_samples, len(all_possible_shifts)), replace=False)
+        shifts.extend(sampled.tolist())
+    
+    return shifts
+
+
+# ---------------------------------------------------------------------------
 # CAGI5 utilities
 # ---------------------------------------------------------------------------
 
@@ -199,6 +244,7 @@ def get_ref_alt_sequences(
     ref_allele: str,
     alt_allele: str,
     window: int = 281,
+    position_shift: int = 0,
 ) -> Tuple[str | None, str | None]:
     """Get both reference and alternate sequences centered on the variant position (hg19, 1-based).
 
@@ -209,13 +255,17 @@ def get_ref_alt_sequences(
         ref_allele: Reference allele from CAGI5 file.
         alt_allele: Alternate allele from CAGI5 file.
         window: Length of output sequence to generate.
+        position_shift: Shift variant position by this many base pairs (default: 0).
         
     Returns:
         Tuple of (ref_sequence, alt_sequence), or (None, None) if extraction fails.
     """
-    # Extract reference sequence centered on variant
+    # Apply position shift
+    shifted_var_pos = var_pos + position_shift
+    
+    # Extract reference sequence centered on (possibly shifted) variant
     half_window = window // 2
-    start_0based = max(0, var_pos - 1 - half_window)
+    start_0based = max(0, shifted_var_pos - 1 - half_window)
     end_0based = start_0based + window
     
     # Get reference sequence from hg19
@@ -591,6 +641,34 @@ def main() -> None:
         default=64,
         help="Batch size for inference (default: 64)",
     )
+    parser.add_argument(
+        "--use_position_shift",
+        action='store_true',
+        help="Enable position shift augmentation: average predictions over shifts up to ±20 bp around the variant position.",
+    )
+    parser.add_argument(
+        "--max_shift",
+        type=int,
+        default=20,
+        help="Maximum position shift in base pairs for augmentation (default: 20). Only used if --use_position_shift is set.",
+    )
+    parser.add_argument(
+        "--n_shift_samples",
+        type=int,
+        default=3,
+        help="Number of random position shifts to sample per variant (default: 3). Only used if --use_position_shift is set.",
+    )
+    parser.add_argument(
+        "--random_seed",
+        type=int,
+        default=None,
+        help="Random seed for position shift sampling (default: None).",
+    )
+    parser.add_argument(
+        "--use_reverse_complement",
+        action='store_true',
+        help="Enable reverse complement augmentation: always average predictions over forward and reverse complement sequences.",
+    )
 
     args = parser.parse_args()
 
@@ -611,6 +689,8 @@ def main() -> None:
     print(f"CAGI5 dir:           {cagi5_dir}")
     print(f"Genome build:        hg19 (via seq_loader)")
     print(f"Sequence length:     {args.seq_len} bp")
+    print(f"Position shift aug:   {args.use_position_shift} (max: {args.max_shift} bp, n_samples: {args.n_shift_samples})")
+    print(f"Reverse comp aug:   {args.use_reverse_complement}")
     print(f"Batch size:          {args.batch_size}")
     print("=" * 80)
     print()
@@ -676,48 +756,101 @@ def main() -> None:
 
         chromosome = CAGI5_REGIONS[element][0]
 
-        ref_sequences: List[str] = []
-        alt_sequences: List[str] = []
         values: List[float] = []
         confidences: List[float] = []
+        
+        # Determine augmentation strategies
+        strands = [False, True] if args.use_reverse_complement else [False]
+        
+        # Collect all sequences for batching
+        variant_ref_seqs: List[List[str]] = []
+        variant_alt_seqs: List[List[str]] = []
 
         for _, row in df.iterrows():
-            ref_seq, alt_seq = get_ref_alt_sequences(
-                seq_loader_obj=seq_loader_obj,
-                chromosome=chromosome,
-                var_pos=int(row["Pos"]),
-                ref_allele=str(row["Ref"]),
-                alt_allele=str(row["Alt"]),
-                window=args.seq_len,
-            )
-            if ref_seq is None or alt_seq is None or len(ref_seq) != args.seq_len or len(alt_seq) != args.seq_len:
+            var_pos = int(row["Pos"])
+            ref_allele = str(row["Ref"])
+            alt_allele = str(row["Alt"])
+            
+            # Get random position shifts for this variant
+            # Use variant position as part of seed for reproducibility but different shifts per variant
+            variant_seed = (args.random_seed + var_pos) if args.random_seed is not None else None
+            if args.use_position_shift:
+                position_shifts = get_random_position_shifts(args.max_shift, args.n_shift_samples, variant_seed)
+            else:
+                position_shifts = [0]
+            
+            # Collect sequences for all augmentations
+            variant_ref_seqs_list: List[str] = []
+            variant_alt_seqs_list: List[str] = []
+            
+            for shift in position_shifts:
+                for use_rc in strands:
+                    ref_seq, alt_seq = get_ref_alt_sequences(
+                        seq_loader_obj=seq_loader_obj,
+                        chromosome=chromosome,
+                        var_pos=var_pos,
+                        ref_allele=ref_allele,
+                        alt_allele=alt_allele,
+                        window=args.seq_len,
+                        position_shift=shift,
+                    )
+                    if ref_seq is None or alt_seq is None or len(ref_seq) != args.seq_len or len(alt_seq) != args.seq_len:
+                        continue
+                    
+                    # Apply reverse complement if needed
+                    if use_rc:
+                        ref_seq = reverse_complement_dna(ref_seq)
+                        alt_seq = reverse_complement_dna(alt_seq)
+                    
+                    variant_ref_seqs_list.append(ref_seq)
+                    variant_alt_seqs_list.append(alt_seq)
+            
+            if len(variant_ref_seqs_list) == 0 or len(variant_alt_seqs_list) == 0:
                 continue
-            ref_sequences.append(ref_seq)
-            alt_sequences.append(alt_seq)
+            
+            variant_ref_seqs.append(variant_ref_seqs_list)
+            variant_alt_seqs.append(variant_alt_seqs_list)
             values.append(float(row["Value"]))
             confidences.append(float(row["Confidence"]))
 
-        if not ref_sequences:
+        if not variant_ref_seqs:
             print(f"  {element}: no valid sequences, skipping")
             continue
 
-        # Predict on both reference and alternate sequences
-        ref_preds = batch_predict_mpra(
+        # Flatten sequences for batch prediction
+        all_ref_seqs = [seq for seq_list in variant_ref_seqs for seq in seq_list]
+        all_alt_seqs = [seq for seq_list in variant_alt_seqs for seq in seq_list]
+        
+        # Predict on all sequences in batches
+        ref_preds_flat = batch_predict_mpra(
             model=model,
-            sequences=ref_sequences,
+            sequences=all_ref_seqs,
             head_name="mpra_head",
             batch_size=args.batch_size,
         )
         
-        alt_preds = batch_predict_mpra(
+        alt_preds_flat = batch_predict_mpra(
             model=model,
-            sequences=alt_sequences,
+            sequences=all_alt_seqs,
             head_name="mpra_head",
             batch_size=args.batch_size,
         )
         
-        # Calculate variant effect as difference: alt - ref
-        preds = alt_preds - ref_preds
+        # Reshape predictions back to per-variant, per-augmentation
+        pred_idx = 0
+        preds: List[float] = []
+        for ref_seqs_list, alt_seqs_list in zip(variant_ref_seqs, variant_alt_seqs):
+            n_aug = len(ref_seqs_list)
+            variant_ref_preds = ref_preds_flat[pred_idx:pred_idx + n_aug]
+            variant_alt_preds = alt_preds_flat[pred_idx:pred_idx + n_aug]
+            pred_idx += n_aug
+            
+            # Average predictions over augmentations and calculate variant effect
+            mean_ref = float(np.mean(variant_ref_preds))
+            mean_alt = float(np.mean(variant_alt_preds))
+            preds.append(mean_alt - mean_ref)
+        
+        preds = np.array(preds)
 
         all_preds.extend(preds.tolist())
         all_targets.extend(values)
@@ -785,11 +918,30 @@ def main() -> None:
     # Extract checkpoint name for filename
     checkpoint_name = Path(args.checkpoint_dir).name
     
+    # Determine filename prefix based on augmentations
+    prefix_parts = []
+    
+    # Augmentation prefixes
+    if args.use_position_shift:
+        prefix_parts.append(f"posshift{args.max_shift}_n{args.n_shift_samples}")
+    if args.use_reverse_complement:
+        prefix_parts.append("revcomp")
+    
+    # Base prefix
+    if prefix_parts:
+        file_prefix = "_".join(prefix_parts) + f"_cagi5_finetuned_{args.cell_type}_{checkpoint_name}"
+    else:
+        file_prefix = f"cagi5_finetuned_{args.cell_type}_{checkpoint_name}"
+    
     # Save summary results
     summary_results = {
         'model': 'finetuned_mpra',
         'cell_type': args.cell_type,
         'checkpoint': checkpoint_name,
+        'use_position_shift': args.use_position_shift,
+        'max_shift': args.max_shift if args.use_position_shift else None,
+        'n_shift_samples': args.n_shift_samples if args.use_position_shift else None,
+        'use_reverse_complement': args.use_reverse_complement,
         'n_elements': len(element_results),
         'n_all_snps': total_snps,
         'n_high_conf_snps': total_high_conf,
@@ -799,13 +951,13 @@ def main() -> None:
         'spearman_high_conf': spearman_hi,
     }
     
-    summary_file = results_dir / f"cagi5_finetuned_{args.cell_type}_{checkpoint_name}_summary.csv"
+    summary_file = results_dir / f"{file_prefix}_summary.csv"
     pd.DataFrame([summary_results]).to_csv(summary_file, index=False)
     print(f"\n✓ Summary results saved to {summary_file}")
     
     # Save per-element results
     element_df = pd.DataFrame(element_results)
-    element_file = results_dir / f"cagi5_finetuned_{args.cell_type}_{checkpoint_name}_per_element.csv"
+    element_file = results_dir / f"{file_prefix}_per_element.csv"
     element_df.to_csv(element_file, index=False)
     print(f"✓ Per-element results saved to {element_file}")
     
@@ -817,7 +969,7 @@ def main() -> None:
         'confidence': all_conf_arr,
         'high_conf': mask_high,
     })
-    predictions_file = results_dir / f"cagi5_finetuned_{args.cell_type}_{checkpoint_name}_predictions.csv"
+    predictions_file = results_dir / f"{file_prefix}_predictions.csv"
     predictions_df.to_csv(predictions_file, index=False)
     print(f"✓ Detailed predictions saved to {predictions_file}")
 
