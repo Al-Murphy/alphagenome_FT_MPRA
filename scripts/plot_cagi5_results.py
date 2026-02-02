@@ -447,9 +447,15 @@ def plot_augmentation_comparison(non_aug_dat_long, aug_dat_long, pal, figsize=(1
     fig, axes = plt.subplots(1, 2, figsize=figsize)
     snp_types = ['All SNPs', 'High Confidence SNPs']
     
+    # Define model order: AG before AG MPRA
+    model_order = ['AG', 'AG MPRA']
+    
     for idx, snp_type in enumerate(snp_types):
         ax = axes[idx]
         data_subset = combined_dat[combined_dat['snp_type'] == snp_type]
+        
+        # Filter to only include models that exist in the data
+        available_models = [m for m in model_order if m in data_subset['base_model'].values]
         
         # Create grouped violin plot
         sns.violinplot(
@@ -458,6 +464,7 @@ def plot_augmentation_comparison(non_aug_dat_long, aug_dat_long, pal, figsize=(1
             y='pearson_r',
             hue='augmented',
             ax=ax,
+            order=available_models,
             palette={'No Augmentation': pal[3], 'With Augmentation': pal[4]},
             inner=None,
             alpha=0.8
@@ -465,10 +472,11 @@ def plot_augmentation_comparison(non_aug_dat_long, aug_dat_long, pal, figsize=(1
         
         # Get x positions
         xtick_positions = ax.get_xticks()
-        base_models = [label.get_text() for label in ax.get_xticklabels()]
+        # Use available_models to ensure consistent ordering
+        base_models = available_models
         
         # Add mean lines and text for each group
-        for i, base_model in enumerate(base_models):
+        for i, base_model in enumerate(available_models):
             x_pos = xtick_positions[i]
             for aug_type, offset in [('No Augmentation', -0.2), ('With Augmentation', 0.2)]:
                 group_data = data_subset[
@@ -510,7 +518,7 @@ def plot_augmentation_comparison(non_aug_dat_long, aug_dat_long, pal, figsize=(1
         ax.set_ylabel('Pearson Correlation')
         ax.set_ylim([0, 1])
         if idx == 1:
-            ax.legend(title='', loc='upper right', bbox_to_anchor=(1.60, 1), frameon=False)
+            ax.legend(title='', loc='upper right', bbox_to_anchor=(-.05, 1.22), frameon=False)
         else:
             #remove legend all together
             ax.legend().remove()
@@ -548,13 +556,16 @@ def plot_augmentation_comparison_by_cell(non_aug_dat_long, aug_dat_long, pal, fi
                 if 'shift' in parts[1] or 'revcomp' in parts[1]:
                     return first_part
                 elif '501bp' in parts[1]:
+                    # Has 501bp with augmentation - convert to base "AG" for comparison
                     if len(parts) > 2 and ('shift' in parts[2] or 'revcomp' in parts[2]):
-                        return first_part
+                        return first_part  # Return just "AG" for comparison
                     else:
-                        return model_str
-        # Remove 501bp for comparison if present
+                        # This shouldn't happen since we filtered out non-augmented 501bp, but handle it
+                        return first_part  # "AG (501bp)" -> "AG"
+        # For non-augmented models (should only be "AG" or "AG MPRA" at this point)
+        # If somehow a 501bp model got through, convert it
         if '501bp' in model_str:
-            return model_str.split(' (')[0]
+            return model_str.split(' (')[0]  # "AG (501bp)" -> "AG"
         return model_str
     
     non_aug_dat_long['base_model'] = non_aug_dat_long['model'].apply(get_base_model)
