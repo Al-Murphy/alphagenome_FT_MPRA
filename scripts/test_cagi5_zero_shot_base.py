@@ -45,6 +45,7 @@ Example:
 from __future__ import annotations
 
 import argparse
+import time
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -365,7 +366,9 @@ def predict_dnase_for_variant(
             shifted_var_pos = var_pos + shift
             
             for use_rc in strands:
-                # Extract hg19 reference sequence centered on (possibly shifted) variant
+                # Extract hg19 reference sequence centered on (possibly shifted) position
+                # The sequence is centered on the shifted position, but the variant stays at original position
+                # This tests robustness by seeing the variant in different sequence contexts
                 # pysam uses 0-based, half-open intervals
                 half_interval = interval_size // 2
                 start_0based = max(0, shifted_var_pos - 1 - half_interval)
@@ -374,8 +377,9 @@ def predict_dnase_for_variant(
                 # Get reference sequence from hg19
                 ref_seq = seq_loader_obj.genome_dat.fetch(chromosome, start_0based, end_0based).upper()
                 
-                # Verify ref allele matches (only check for original position, not shifted)
-                variant_pos_in_seq = (shifted_var_pos - 1) - start_0based
+                # Variant stays at original position within the (possibly shifted) sequence
+                # This matches the MPRA script's behavior
+                variant_pos_in_seq = (var_pos - 1) - start_0based
                 if variant_pos_in_seq < 0 or variant_pos_in_seq + len(ref_allele) > len(ref_seq):
                     if shift == 0:  # Only warn for original position
                         print(f"  Warning: Variant position {var_pos} out of bounds for interval")
@@ -404,10 +408,27 @@ def predict_dnase_for_variant(
                     ref_seq[variant_pos_in_seq + len(ref_allele):]
                 )
                 
+                # Track variant position for mask centering
+                # This is the position of the variant within the sequence (before any reverse complement)
+                variant_pos_for_mask = variant_pos_in_seq
+                seq_len_before_rc = len(ref_seq)
+                
                 # Apply reverse complement if needed
                 if use_rc:
                     ref_seq = reverse_complement_dna(ref_seq)
                     alt_seq = reverse_complement_dna(alt_seq)
+                    # After reverse complement, the sequence is reversed
+                    # If variant was at position i (0-based) in forward sequence of length L,
+                    # and variant has length len, it spans [i, i+1, ..., i+len-1]
+                    # After reverse: position i+len-1 becomes L-1-(i+len-1) = L-i-len
+                    # Position i becomes L-1-i
+                    # So variant now spans [L-i-len, L-i-len+1, ..., L-1-i]
+                    # For centering the mask, use the middle of the variant:
+                    # Start: L-i-len, End: L-1-i
+                    # Center: (L-i-len + L-1-i) / 2 = L - i - (len+1)/2
+                    # For single base (len=1): L - i - 1
+                    # For simplicity, use: L - 1 - i (works for single base, close for multi-base)
+                    variant_pos_for_mask = seq_len_before_rc - 1 - variant_pos_in_seq
                 
                 # Use AlphaGenome's predict_sequence for both ref and alt
                 ref_output = model.predict_sequence(
@@ -441,10 +462,10 @@ def predict_dnase_for_variant(
                 seq_len = ref_dnase.shape[0]
                 
                 # Center the mask on the variant position within the sequence
-                # variant_pos_in_seq is the position of the variant within the extracted sequence
+                # variant_pos_for_mask accounts for reverse complement if applied
                 half_window = center_window_bp // 2
-                center_start = max(0, variant_pos_in_seq - half_window)
-                center_end = min(seq_len, variant_pos_in_seq + half_window + (center_window_bp % 2))
+                center_start = max(0, variant_pos_for_mask - half_window)
+                center_end = min(seq_len, variant_pos_for_mask + half_window + (center_window_bp % 2))
                 window_size = center_end - center_start
                 
                 # Skip if window is too small (variant too close to edge)
@@ -621,6 +642,11 @@ def main() -> None:
     
     # Store per-element results
     element_results: List[dict] = []
+    
+    # Timing metrics
+    total_start_time = time.time()
+    total_prediction_time = 0.0
+    total_variants_processed = 0
 
     for element, df in cagi5_data.items():
         if element not in CAGI5_REGIONS:
@@ -634,12 +660,14 @@ def main() -> None:
         preds: List[float] = []
 
         print(f"  {element}: predicting on {len(df)} variants...")
+        element_pred_start = time.time()
         for idx, row in df.iterrows():
             var_pos = int(row["Pos"])
             ref_allele = str(row["Ref"])
             alt_allele = str(row["Alt"])
             
-            # Use seq_loader to get hg19 sequences and predict
+            # Time the prediction
+            pred_start = time.time()
             pred = predict_dnase_for_variant(
                 model=model,
                 seq_loader_obj=seq_loader_obj,
@@ -656,6 +684,8 @@ def main() -> None:
                 random_seed=args.random_seed,
                 use_reverse_complement=args.use_reverse_complement,
             )
+            pred_time = time.time() - pred_start
+            total_prediction_time += pred_time
             
             if np.isnan(pred):
                 continue
@@ -663,10 +693,13 @@ def main() -> None:
             preds.append(pred)
             values.append(float(row["Value"]))
             confidences.append(float(row["Confidence"]))
+            total_variants_processed += 1
             
             # Progress indicator
             if (idx + 1) % 100 == 0:
                 print(f"    Processed {idx + 1}/{len(df)} variants...", end='\r')
+        
+        element_pred_time = time.time() - element_pred_start
 
         if not preds:
             print(f"  {element}: no valid predictions, skipping")
@@ -700,7 +733,8 @@ def main() -> None:
         
         print(
             f"  {element}: n={len(preds_arr):5d}, "
-            f"Pearson={pearson_el: .4f}, Spearman={spearman_el: .4f}"
+            f"Pearson={pearson_el: .4f}, Spearman={spearman_el: .4f}, "
+            f"time={element_pred_time:.1f}s ({element_pred_time/len(preds_arr)*1000:.1f}ms/variant)"
         )
 
     all_preds_arr = np.asarray(all_preds, dtype=np.float32)
@@ -731,6 +765,18 @@ def main() -> None:
     print(f"\nHigh-confidence SNPs (Confidence > 0.1, n={total_high_conf} across {len(element_results)} elements):")
     print(f"  Pearson r:    {pearson_hi: .4f} (average across elements)")
     print(f"  Spearman rho: {spearman_hi: .4f} (average across elements)")
+    
+    # Print timing summary
+    total_time = time.time() - total_start_time
+    print("\n" + "=" * 80)
+    print("Timing Summary")
+    print("=" * 80)
+    print(f"Total runtime:           {total_time:.2f} s ({total_time/60:.2f} min)")
+    print(f"Total prediction time:   {total_prediction_time:.2f} s ({total_prediction_time/60:.2f} min)")
+    print(f"Variants processed:      {total_variants_processed}")
+    if total_variants_processed > 0:
+        print(f"Time per variant:        {total_prediction_time/total_variants_processed*1000:.2f} ms")
+        print(f"Variants per second:      {total_variants_processed/total_prediction_time:.2f}")
     print("=" * 80)
     
     # Save results to CSV
@@ -773,6 +819,11 @@ def main() -> None:
         'spearman_all': spearman_all,
         'pearson_high_conf': pearson_hi,
         'spearman_high_conf': spearman_hi,
+        'total_runtime_seconds': total_time,
+        'total_prediction_time_seconds': total_prediction_time,
+        'n_variants_processed': total_variants_processed,
+        'time_per_variant_ms': (total_prediction_time/total_variants_processed*1000) if total_variants_processed > 0 else None,
+        'variants_per_second': (total_variants_processed/total_prediction_time) if total_prediction_time > 0 else None,
     }
     
     summary_file = results_dir / f"{file_prefix}_summary.csv"

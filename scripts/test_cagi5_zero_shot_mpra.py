@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -748,6 +749,11 @@ def main() -> None:
     
     # Store per-element results
     element_results: List[dict] = []
+    
+    # Timing metrics
+    total_start_time = time.time()
+    total_prediction_time = 0.0
+    total_variants_processed = 0
 
     for element, df in cagi5_data.items():
         if element not in CAGI5_REGIONS:
@@ -821,7 +827,8 @@ def main() -> None:
         all_ref_seqs = [seq for seq_list in variant_ref_seqs for seq in seq_list]
         all_alt_seqs = [seq for seq_list in variant_alt_seqs for seq in seq_list]
         
-        # Predict on all sequences in batches
+        # Time the batch predictions
+        element_pred_start = time.time()
         ref_preds_flat = batch_predict_mpra(
             model=model,
             sequences=all_ref_seqs,
@@ -835,6 +842,8 @@ def main() -> None:
             head_name="mpra_head",
             batch_size=args.batch_size,
         )
+        element_pred_time = time.time() - element_pred_start
+        total_prediction_time += element_pred_time
         
         # Reshape predictions back to per-variant, per-augmentation
         pred_idx = 0
@@ -851,10 +860,11 @@ def main() -> None:
             preds.append(mean_alt - mean_ref)
         
         preds = np.array(preds)
-
+        
         all_preds.extend(preds.tolist())
         all_targets.extend(values)
         all_conf.extend(confidences)
+        total_variants_processed += len(preds)
 
         pearson_el, spearman_el = compute_correlations(preds, np.asarray(values, dtype=np.float32))
         
@@ -878,7 +888,8 @@ def main() -> None:
         
         print(
             f"  {element}: n={len(preds):5d}, "
-            f"Pearson={pearson_el: .4f}, Spearman={spearman_el: .4f}"
+            f"Pearson={pearson_el: .4f}, Spearman={spearman_el: .4f}, "
+            f"time={element_pred_time:.1f}s ({element_pred_time/len(preds)*1000:.1f}ms/variant)"
         )
 
     all_preds_arr = np.asarray(all_preds, dtype=np.float32)
@@ -909,6 +920,18 @@ def main() -> None:
     print(f"\nHigh-confidence SNPs (Confidence > 0.1, n={total_high_conf} across {len(element_results)} elements):")
     print(f"  Pearson r:    {pearson_hi: .4f} (average across elements)")
     print(f"  Spearman rho: {spearman_hi: .4f} (average across elements)")
+    
+    # Print timing summary
+    total_time = time.time() - total_start_time
+    print("\n" + "=" * 80)
+    print("Timing Summary")
+    print("=" * 80)
+    print(f"Total runtime:           {total_time:.2f} s ({total_time/60:.2f} min)")
+    print(f"Total prediction time:   {total_prediction_time:.2f} s ({total_prediction_time/60:.2f} min)")
+    print(f"Variants processed:      {total_variants_processed}")
+    if total_variants_processed > 0:
+        print(f"Time per variant:        {total_prediction_time/total_variants_processed*1000:.2f} ms")
+        print(f"Variants per second:      {total_variants_processed/total_prediction_time:.2f}")
     print("=" * 80)
     
     # Save results to CSV
@@ -949,6 +972,11 @@ def main() -> None:
         'spearman_all': spearman_all,
         'pearson_high_conf': pearson_hi,
         'spearman_high_conf': spearman_hi,
+        'total_runtime_seconds': total_time,
+        'total_prediction_time_seconds': total_prediction_time,
+        'n_variants_processed': total_variants_processed,
+        'time_per_variant_ms': (total_prediction_time/total_variants_processed*1000) if total_variants_processed > 0 else None,
+        'variants_per_second': (total_variants_processed/total_prediction_time) if total_prediction_time > 0 else None,
     }
     
     summary_file = results_dir / f"{file_prefix}_summary.csv"

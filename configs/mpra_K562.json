@@ -15,8 +15,8 @@
   "model": {
     "center_bp": 256,
     "pooling_type": "flatten",
-    "nl_size": "512,512",
-    "do": 0.5,
+    "nl_size": "128",
+    "do": 0,
     "activation": "relu"
   },
   
