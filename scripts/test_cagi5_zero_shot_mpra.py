@@ -37,6 +37,20 @@ Example:
     python scripts/test_cagi5_zero_shot_mpra.py \\
         --checkpoint_dir ./results/models/checkpoints/mpra_encoder_head_K562 \\
         --cell_type K562
+        
+        
+Code to compare run times of Augmented results:
+
+import pandas as pd
+import glob
+
+time_files = glob.glob("./results/cagi5_evaluations/posshift20_n3_revcomp_cagi5_*_summary.csv")
+
+dat = [pd.read_csv(f) for f in time_files]
+dat = pd.concat(dat)
+dat = dat[["model","cell_type","n_variants_processed","time_per_variant_ms"]]
+dat.groupby(["model"])["time_per_variant_ms"].mean()
+        
 """
 
 from __future__ import annotations

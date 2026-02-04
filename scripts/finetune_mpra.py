@@ -358,9 +358,22 @@ def main():
     parser.add_argument(
         '--save_full_model',
         action='store_true',
-        help='Save full model including backbone (otherwise only saves head). '
-             'Note: When two-stage training is enabled (--second_stage_lr), Stage 1 '
-             'automatically saves the full model regardless of this flag.'
+        help='Save full model including all backbone layers (encoder + transformer + decoder + head). '
+             'By default, saves minimal model (encoder + head). Use --no-save_minimal_model to save head only.'
+    )
+    parser.add_argument(
+        '--save_minimal_model',
+        action='store_true',
+        help='Save minimal model (encoder + custom head only, skips transformer/decoder). '
+             'This is the default behavior. Use --save_full_model to save full model, or '
+             'use --no-save_minimal_model to save head only (no alphagenome layers).'
+    )
+    parser.add_argument(
+        '--no-save_minimal_model',
+        dest='save_minimal_model',
+        action='store_false',
+        help='Disable minimal model saving (saves head only, no alphagenome layers). '
+             'Use with --save_full_model to save full model instead.'
     )
     parser.add_argument(
         '--early_stopping_patience',
@@ -507,7 +520,23 @@ def main():
             parser.set_defaults(base_checkpoint_path=config.get('base_checkpoint_path', None))
     
     # Now parse with updated defaults (command-line args will override config)
+    import sys
     args = parser.parse_args()
+    
+    # Set default save mode: minimal model (encoder + head) unless explicitly overridden
+    # Check if flags were explicitly set by checking sys.argv
+    save_full_model_set = '--save_full_model' in sys.argv
+    no_save_minimal_set = '--no-save_minimal_model' in sys.argv
+    
+    if save_full_model_set:
+        # User explicitly wants full model
+        args.save_minimal_model = False
+    elif no_save_minimal_set:
+        # User explicitly wants head only
+        args.save_minimal_model = False
+    else:
+        # Default to minimal model if neither flag was explicitly set
+        args.save_minimal_model = True
     
     # Construct full checkpoint path from base dir, cell type, and run name
     from pathlib import Path
@@ -542,7 +571,12 @@ def main():
     else:
         print(f"Two-stage training:         Disabled")
     print(f"Checkpoint path:            {checkpoint_path}")
-    print(f"Save full model:            {args.save_full_model}")
+    if args.save_minimal_model:
+        print(f"Save model:                 Minimal (encoder + heads only)")
+    elif args.save_full_model:
+        print(f"Save model:                 Full model")
+    else:
+        print(f"Save model:                 Head only")
     print(f"Use W&B:                    {not args.no_wandb}")
     if args.base_checkpoint_path is not None:
         print(f"Base AlphaGenome checkpoint:{args.base_checkpoint_path}")
@@ -623,6 +657,8 @@ def main():
     else:
         print("\nTraining full model (backbone + head)...")
     
+    # Save mode already determined above after parsing
+    
     # Validate cached embeddings setup
     if args.use_cached_embeddings:
         if args.cache_file is None:
@@ -633,7 +669,7 @@ def main():
         print(f"\nUsing cached embeddings from: {args.cache_file}")
         print("  Note: Augmentations are automatically disabled when using cached embeddings")
         # When using cached embeddings, default to saving full model for easier downstream use
-        if not args.save_full_model:
+        if not args.save_full_model and not args.save_minimal_model:
             print("  Note: Setting save_full_model=True for cached embeddings mode (recommended for downstream use)")
             args.save_full_model = True
     
@@ -744,6 +780,7 @@ def main():
         learning_rate=args.learning_rate,
         checkpoint_dir=str(checkpoint_path),
         save_full_model=args.save_full_model,
+        save_minimal_model=args.save_minimal_model,
         early_stopping_patience=args.early_stopping_patience,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         gradient_clip=args.gradient_clip,

@@ -520,6 +520,7 @@ def _train_stage(
     early_stopping_patience: int,
     val_eval_frequency: int,
     test_eval_frequency: int,
+    save_minimal_model: bool = False,
     stage_name: str = "Stage 1",
     start_epoch: int = 0,
     use_cached_embeddings: bool = False,
@@ -772,12 +773,18 @@ def _train_stage(
                     
                     # Save checkpoint immediately when we find a better model
                     if checkpoint_dir:
-                        save_type = "full model" if save_full_model else "head only"
+                        if save_minimal_model:
+                            save_type = "minimal model (encoder + heads)"
+                        elif save_full_model:
+                            save_type = "full model"
+                        else:
+                            save_type = "head only"
                         print(f"  → New best model at epoch {current_epoch_frac:.2f}! "
                               f"Saving checkpoint ({save_type}, val_loss: {best_val_loss:.6f})...")
                         model.save_checkpoint(
                             checkpoint_dir,
-                            save_full_model=save_full_model
+                            save_full_model=save_full_model,
+                            save_minimal_model=save_minimal_model
                         )
                     else:
                         print(f"  → New best model at epoch {current_epoch_frac:.2f}! (val_loss: {best_val_loss:.6f})")
@@ -941,11 +948,17 @@ def _train_stage(
             if current_train_loss < best_val_loss:  # Reusing best_val_loss for train loss tracking
                 best_val_loss = current_train_loss
                 best_epoch = current_epoch
-                save_type = "full model" if save_full_model else "head only"
+                if save_minimal_model:
+                    save_type = "minimal model (encoder + heads)"
+                elif save_full_model:
+                    save_type = "full model"
+                else:
+                    save_type = "head only"
                 print(f"  → New best training loss! Saving checkpoint ({save_type}, train_loss: {best_val_loss:.6f})...")
                 model.save_checkpoint(
                     checkpoint_dir,
-                    save_full_model=save_full_model
+                    save_full_model=save_full_model,
+                    save_minimal_model=save_minimal_model
                 )
     
     return history, optimizer_state, rng_key, best_epoch, best_val_loss
@@ -977,6 +990,7 @@ def train(
     use_cached_embeddings: bool = False,
     lr_scheduler: str | None = None,
     save_test_results: str | None = None,
+    save_minimal_model: bool = False,
 ) -> dict:
     """Complete training loop with checkpointing and early stopping.
     
@@ -1197,11 +1211,21 @@ def train(
         checkpoint_path = Path(checkpoint_dir).resolve()  # Convert to absolute path
         stage1_checkpoint_dir = str(checkpoint_path / 'stage1')
     
-    # Determine save_full_model for Stage 1
-    # If two-stage training is enabled, Stage 1 must save full model for Stage 2 to load
-    stage1_save_full_model = save_full_model or enable_second_stage
-    if enable_second_stage and not save_full_model:
-        print(f"Note: Two-stage training enabled - Stage 1 will save full model (required for Stage 2)")
+    # Determine save options for Stage 1
+    # Default is minimal model (encoder + head)
+    # If two-stage training is enabled, Stage 1 must save encoder + head for Stage 2 to load
+    # We can use minimal model (encoder + head) or full model, but not head-only
+    if enable_second_stage:
+        if not save_full_model and not save_minimal_model:
+            # Default to minimal model for Stage 1 when two-stage is enabled
+            print(f"Note: Two-stage training enabled - Stage 1 will save minimal model (encoder + head, required for Stage 2)")
+            save_minimal_model = True
+        elif save_full_model:
+            print(f"Note: Two-stage training enabled - Stage 1 will save full model")
+        # If save_minimal_model is True (default), it's already set correctly
+    
+    stage1_save_full_model = save_full_model
+    stage1_save_minimal_model = save_minimal_model
     
     # ========================================================================
     # STAGE 1: Train with frozen backbone (skip if resuming from Stage 2)
@@ -1223,6 +1247,7 @@ def train(
             use_wandb=use_wandb,
             checkpoint_dir=stage1_checkpoint_dir,
             save_full_model=stage1_save_full_model,
+            save_minimal_model=stage1_save_minimal_model,
             early_stopping_patience=early_stopping_patience,
             val_eval_frequency=val_eval_frequency,
             test_eval_frequency=test_eval_frequency,
@@ -1281,6 +1306,7 @@ def train(
                 config = json.load(f)
             
             save_full_model = config.get('save_full_model', False)
+            save_minimal_model = config.get('save_minimal_model', False)
             
             # Load checkpoint parameters using Orbax
             checkpointer = ocp.StandardCheckpointer()
@@ -1290,6 +1316,44 @@ def train(
                 # Full model checkpoint - replace all parameters
                 model._params = loaded_params
                 model._state = loaded_state
+            elif save_minimal_model:
+                # Minimal model checkpoint - encoder + head only
+                # Need to merge encoder + head params with existing model params (which have transformer/decoder)
+                def merge_minimal_params(base_params, minimal_params):
+                    """Merge minimal params (encoder + head) into base params, keeping transformer/decoder from base."""
+                    import copy
+                    merged = copy.deepcopy(base_params)
+                    
+                    # Merge encoder parameters
+                    if 'alphagenome' in minimal_params and 'sequence_encoder' in minimal_params['alphagenome']:
+                        if 'alphagenome' not in merged:
+                            merged['alphagenome'] = {}
+                        merged['alphagenome']['sequence_encoder'] = minimal_params['alphagenome']['sequence_encoder']
+                    
+                    # Merge custom head parameters
+                    if 'alphagenome' in minimal_params and 'head' in minimal_params['alphagenome']:
+                        if 'alphagenome' not in merged:
+                            merged['alphagenome'] = {}
+                        if 'head' not in merged['alphagenome']:
+                            merged['alphagenome']['head'] = {}
+                        for head_name in minimal_params['alphagenome']['head']:
+                            merged['alphagenome']['head'][head_name] = minimal_params['alphagenome']['head'][head_name]
+                    
+                    # Also handle flat structure (for use_encoder_output=True mode)
+                    for key, value in minimal_params.items():
+                        key_str = str(key)
+                        if 'sequence_encoder' in key_str or any(head_name in key_str for head_name in model._custom_heads):
+                            merged[key] = value
+                    
+                    return merged
+                
+                # Merge minimal params with current model params
+                model._params = merge_minimal_params(model._params, loaded_params)
+                if loaded_state:
+                    model._state = merge_minimal_params(model._state, loaded_state)
+                else:
+                    # If no state in checkpoint, keep existing state
+                    pass
             else:
                 # Head-only checkpoint - merge head parameters into existing model
                 # Handle all possible parameter structures
@@ -1374,7 +1438,7 @@ def train(
             stage2_checkpoint_dir = str(checkpoint_path / 'stage2')
         
         # Train Stage 2
-        # Always save full model in Stage 2 since encoder is trainable
+        # Use same save mode as Stage 1 (minimal or full model both save the fine-tuned encoder)
         stage2_history, optimizer_state, rng_key, stage2_best_epoch, stage2_best_val_loss = _train_stage(
             model=model,
             train_loader=train_loader,
@@ -1390,7 +1454,8 @@ def train(
             gradient_accumulation_steps=gradient_accumulation_steps,
             use_wandb=use_wandb,
             checkpoint_dir=stage2_checkpoint_dir,
-            save_full_model=True,  # Always save full model in Stage 2 since encoder is trainable
+            save_full_model=save_full_model,  # Use same save mode as Stage 1
+            save_minimal_model=save_minimal_model,  # Minimal model saves fine-tuned encoder + head
             early_stopping_patience=early_stopping_patience,
             val_eval_frequency=val_eval_frequency,
             test_eval_frequency=test_eval_frequency,
