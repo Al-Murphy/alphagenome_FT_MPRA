@@ -728,13 +728,37 @@ def main() -> None:
 
     print(f"Cell-type specific CAGI5 elements: {allowed_elements}")
 
-    # Load model
+    # Load model and detect stage type
     print("Loading fine-tuned MPRA model...")
     model = load_finetuned_mpra_model(
         checkpoint_dir=checkpoint_dir,
         base_checkpoint_path=args.base_checkpoint_path,
     )
     print("✓ Model loaded")
+    
+    # Detect if this is stage1 (probing) or stage2 (fine-tuning)
+    # Check checkpoint path for stage indicator
+    checkpoint_path_str = str(checkpoint_dir)
+    is_stage1 = "stage1" in checkpoint_path_str.lower()
+    is_stage2 = "stage2" in checkpoint_path_str.lower()
+    
+    # Also check config.json if path doesn't indicate stage
+    if not is_stage1 and not is_stage2:
+        config_path = checkpoint_dir / "config.json"
+        if config_path.exists():
+            try:
+                with open(config_path, "r") as f:
+                    cfg = json.load(f)
+                save_full_model = cfg.get("save_full_model", True)
+                # stage1 = heads-only (save_full_model=False), stage2 = full-model (save_full_model=True)
+                is_stage1 = not save_full_model
+                is_stage2 = save_full_model
+            except Exception:
+                pass
+    
+    # Default to stage2 (fine-tuning) if unclear
+    model_type = "probing" if is_stage1 else "finetuned"
+    print(f"Detected model type: {model_type} ({'stage1' if is_stage1 else 'stage2'})")
 
     # Initialize seq_loader for hg19
     print("\nInitializing seq_loader for hg19...")
@@ -964,15 +988,15 @@ def main() -> None:
     if args.use_reverse_complement:
         prefix_parts.append("revcomp")
     
-    # Base prefix
+    # Base prefix - use model_type (probing or finetuned)
     if prefix_parts:
-        file_prefix = "_".join(prefix_parts) + f"_cagi5_finetuned_{args.cell_type}_{checkpoint_name}"
+        file_prefix = "_".join(prefix_parts) + f"_cagi5_{model_type}_{args.cell_type}_{checkpoint_name}"
     else:
-        file_prefix = f"cagi5_finetuned_{args.cell_type}_{checkpoint_name}"
+        file_prefix = f"cagi5_{model_type}_{args.cell_type}_{checkpoint_name}"
     
     # Save summary results
     summary_results = {
-        'model': 'finetuned_mpra',
+        'model': f'{model_type}_mpra',
         'cell_type': args.cell_type,
         'checkpoint': checkpoint_name,
         'use_position_shift': args.use_position_shift,

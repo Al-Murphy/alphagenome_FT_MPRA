@@ -450,6 +450,22 @@ def main():
     # Now parse with updated defaults (command-line args will override config)
     args = parser.parse_args()
     
+    # Set default save mode: minimal model (encoder + head) unless explicitly overridden,
+    # mirroring the MPRA finetuning script behaviour.
+    import sys
+    save_full_model_set = '--save_full_model' in sys.argv
+    no_save_minimal_set = '--no-save_minimal_model' in sys.argv
+    
+    if save_full_model_set:
+        # User explicitly wants full model
+        args.save_minimal_model = False
+    elif no_save_minimal_set:
+        # User explicitly wants head only
+        args.save_minimal_model = False
+    else:
+        # Default to minimal model if neither flag was explicitly set
+        args.save_minimal_model = True
+    
     # Construct full checkpoint path from base dir and run name
     from pathlib import Path
     checkpoint_path = (Path(args.checkpoint_dir) / "deepstarr" / args.wandb_name).resolve()

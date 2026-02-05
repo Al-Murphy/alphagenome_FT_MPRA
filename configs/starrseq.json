@@ -15,7 +15,7 @@
     "center_bp": 256,
     "pooling_type": "flatten",
     "nl_size": "512,512",
-    "do": 0.1,
+    "do": 0.5,
     "activation": "relu"
   },
   
@@ -45,8 +45,7 @@
   },
   
   "checkpointing": {
-    "checkpoint_dir": "./results/models/checkpoints/",
-    "save_full_model": true
+    "checkpoint_dir": "./results/models/checkpoints/"
   },
   
   "wandb": {

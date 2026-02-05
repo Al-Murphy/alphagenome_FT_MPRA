@@ -48,7 +48,7 @@ def load_cagi5_data(results_dir, include_augmented=True):
     Returns:
         DataFrame with all loaded data
     """
-    # Load regular files
+    # Load regular files - include both base, probing, and finetuned
     pth = os.path.join(results_dir, "cagi5_*_per_element.csv")
     pths = glob.glob(pth)
     
@@ -61,6 +61,7 @@ def load_cagi5_data(results_dir, include_augmented=True):
     # Load augmented files if requested
     if include_augmented:
         # Pattern for augmented files (e.g., posshift20_n3_revcomp_cagi5_base_K562_per_element.csv)
+        # Also includes probing and finetuned with augmentations
         pth_aug = os.path.join(results_dir, "*_cagi5_*_per_element.csv")
         pths_aug = glob.glob(pth_aug)
         # Filter to only include augmented files (exclude already loaded ones)
@@ -116,8 +117,11 @@ def load_cagi5_data(results_dir, include_augmented=True):
                 model_name = "AG (501bp)"
             dat_i["model"] = model_name + aug_suffix
             dat_i["cell_type"] = parts[2]
+        elif parts[1] == "probing":
+            dat_i["model"] = "AG MPRA (Probing)" + aug_suffix
+            dat_i["cell_type"] = parts[2]
         elif parts[1] == "finetuned":
-            dat_i["model"] = "AG MPRA" + aug_suffix
+            dat_i["model"] = "AG MPRA (Fine-tuned)" + aug_suffix
             dat_i["cell_type"] = parts[2]
         else:
             # Fallback
@@ -169,20 +173,35 @@ def plot_by_model(dat_long, pal, include_501bp=True, figsize=(12, 5)):
     snp_types = ['All SNPs', 'High Confidence SNPs']
     
     if include_501bp:
-        model_order = ['AG (501bp)', 'AG', 'AG MPRA']
+        model_order = ['AG (501bp)', 'AG (384bp)', 'AG MPRA (Probing)', 'AG MPRA (Fine-tuned)']
     else:
-        model_order = ['AG', 'AG MPRA']
+        model_order = ['AG', 'AG MPRA (Probing)', 'AG MPRA (Fine-tuned)']
     
     # Color mapping for models
     model_colors = {
         'AG': pal[3],
-        'AG (501bp)': pal[0],  # Different shade for 501bp version
-        'AG MPRA': pal[4]
+        'AG (384bp)': pal[0],  # Different shade for 384bp version
+        'AG (501bp)': pal[3],  # #394165 color for 501bp version
+        'AG MPRA (Probing)': pal[5],  # Different color for probing
+        'AG MPRA (Fine-tuned)': pal[4]
     }
+    
+    # Create a copy of data and rename AG to AG (384bp) for display when include_501bp=True
+    # Keep AG (501bp) as AG (501bp)
+    dat_long_plot = dat_long.copy()
+    if include_501bp:
+        # Rename "AG" to "AG (384bp)" - keep "AG (501bp)" as is
+        ag_mask = dat_long_plot['model'] == 'AG'
+        if ag_mask.any():
+            dat_long_plot.loc[ag_mask, 'model'] = 'AG (384bp)'
+        # Handle cases with augmentation suffixes for plain AG - replace 'AG (...)' patterns (but not AG MPRA or AG (501bp))
+        ag_aug_mask = dat_long_plot['model'].str.contains('^AG \\(', regex=True, na=False) & ~dat_long_plot['model'].str.contains('AG MPRA', regex=False, na=False) & ~dat_long_plot['model'].str.contains('501bp', regex=False, na=False) & ~dat_long_plot['model'].str.contains('384bp', regex=False, na=False)
+        if ag_aug_mask.any():
+            dat_long_plot.loc[ag_aug_mask, 'model'] = dat_long_plot.loc[ag_aug_mask, 'model'].str.replace('^AG \\(', 'AG (384bp) (', regex=True, n=1)
     
     for idx, snp_type in enumerate(snp_types):
         ax = axes[idx]
-        data_subset = dat_long[dat_long['snp_type'] == snp_type]
+        data_subset = dat_long_plot[dat_long_plot['snp_type'] == snp_type]
         
         # Filter to only include models that exist in the data
         available_models = [m for m in model_order if m in data_subset['model'].values]
@@ -203,9 +222,11 @@ def plot_by_model(dat_long, pal, include_501bp=True, figsize=(12, 5)):
         xtick_positions = ax.get_xticks()
         model_to_xpos = {label.get_text(): pos for pos, label in zip(xtick_positions, ax.get_xticklabels())}
         
-        # Calculate statistics for title (only AG MPRA)
-        ag_mpra_data = data_subset[data_subset['model'] == 'AG MPRA']
-        n_total = ag_mpra_data['n'].sum()
+        # Calculate statistics for title (AG MPRA fine-tuned, or probing if fine-tuned not available)
+        ag_mpra_data = data_subset[data_subset['model'] == 'AG MPRA (Fine-tuned)']
+        if len(ag_mpra_data) == 0:
+            ag_mpra_data = data_subset[data_subset['model'] == 'AG MPRA (Probing)']
+        n_total = ag_mpra_data['n'].sum() if len(ag_mpra_data) > 0 else 0
         n_elements = len(ag_mpra_data)
         title_parts = [f'{snp_type}', f'N={n_total} SNPs, {n_elements} regulatory elements']
         
@@ -258,6 +279,22 @@ def plot_by_model(dat_long, pal, include_501bp=True, figsize=(12, 5)):
         ax.set_ylabel('Pearson Correlation')
         ax.set_ylim([0, 1])
         ax.grid(axis='y', alpha=0.3, linestyle='--')
+        
+        # Wrap x-axis labels: put "(384bp)", "(501bp)", "(Probing)", or "(Fine-tuned)" on next line
+        labels = [label.get_text() for label in ax.get_xticklabels()]
+        wrapped_labels = []
+        for label in labels:
+            if '(384bp)' in label:
+                wrapped_labels.append(label.replace('(384bp)', '\n(384bp)'))
+            elif '(501bp)' in label:
+                wrapped_labels.append(label.replace('(501bp)', '\n(501bp)'))
+            elif '(Probing)' in label:
+                wrapped_labels.append(label.replace('(Probing)', '\n(Probing)'))
+            elif '(Fine-tuned)' in label:
+                wrapped_labels.append(label.replace('(Fine-tuned)', '\n(Fine-tuned)'))
+            else:
+                wrapped_labels.append(label)
+        ax.set_xticklabels(wrapped_labels)
     
     plt.tight_layout()
     return fig
@@ -273,44 +310,63 @@ def plot_by_model_and_cell(dat_long, pal, include_501bp=True, figsize=(20, 6)):
         figsize: Figure size tuple
     """
     # Create a combined label for model and cell type
-    dat_long = dat_long.copy()
-    dat_long['model_cell'] = dat_long['model'] + ' (' + dat_long['cell_type'] + ')'
+    dat_long_plot = dat_long.copy()
+    # Rename AG to AG (384bp) for display when include_501bp=True
+    # Keep AG (501bp) as AG (501bp)
+    if include_501bp:
+        # Rename "AG" to "AG (384bp)" - keep "AG (501bp)" as is
+        ag_mask = dat_long_plot['model'] == 'AG'
+        if ag_mask.any():
+            dat_long_plot.loc[ag_mask, 'model'] = 'AG (384bp)'
+        # Handle cases with augmentation suffixes for plain AG - replace 'AG (...)' patterns (but not AG MPRA or AG (501bp))
+        ag_aug_mask = dat_long_plot['model'].str.contains('^AG \\(', regex=True, na=False) & ~dat_long_plot['model'].str.contains('AG MPRA', regex=False, na=False) & ~dat_long_plot['model'].str.contains('501bp', regex=False, na=False) & ~dat_long_plot['model'].str.contains('384bp', regex=False, na=False)
+        if ag_aug_mask.any():
+            dat_long_plot.loc[ag_aug_mask, 'model'] = dat_long_plot.loc[ag_aug_mask, 'model'].str.replace('^AG \\(', 'AG (384bp) (', regex=True, n=1)
+    dat_long_plot['model_cell'] = dat_long_plot['model'] + ' (' + dat_long_plot['cell_type'] + ')'
     
     fig, axes = plt.subplots(1, 2, figsize=figsize)
     snp_types = ['All SNPs', 'High Confidence SNPs']
     
     if include_501bp:
-        # Define order: AG (501bp) (K562), AG (K562), AG MPRA (K562), AG (501bp) (HepG2), AG (HepG2), AG MPRA (HepG2)
+        # When include_501bp=True, "AG" is renamed to "AG (384bp)", "AG (501bp)" stays as is
         model_cell_order = [
             'AG (501bp) (K562)',
-            'AG (K562)', 
-            'AG MPRA (K562)', 
+            'AG (384bp) (K562)', 
+            'AG MPRA (Probing) (K562)',
+            'AG MPRA (Fine-tuned) (K562)', 
             'AG (501bp) (HepG2)',
-            'AG (HepG2)', 
-            'AG MPRA (HepG2)'
+            'AG (384bp) (HepG2)', 
+            'AG MPRA (Probing) (HepG2)',
+            'AG MPRA (Fine-tuned) (HepG2)'
         ]
     else:
-        # Define order: AG (K562), AG MPRA (K562), AG (HepG2), AG MPRA (HepG2)
+        # Define order: AG (K562), AG MPRA (Probing) (K562), AG MPRA (Fine-tuned) (K562), AG (HepG2), AG MPRA (Probing) (HepG2), AG MPRA (Fine-tuned) (HepG2)
         model_cell_order = [
             'AG (K562)', 
-            'AG MPRA (K562)', 
+            'AG MPRA (Probing) (K562)',
+            'AG MPRA (Fine-tuned) (K562)', 
             'AG (HepG2)', 
-            'AG MPRA (HepG2)'
+            'AG MPRA (Probing) (HepG2)',
+            'AG MPRA (Fine-tuned) (HepG2)'
         ]
     
     # Color mapping for model-cell combinations
     model_cell_colors = {
         'AG (K562)': pal[3],
-        'AG (501bp) (K562)': pal[0],
-        'AG MPRA (K562)': pal[4],
+        'AG (384bp) (K562)': pal[0],
+        'AG (501bp) (K562)': pal[3],  # #394165 color for 501bp version
+        'AG MPRA (Probing) (K562)': pal[5],
+        'AG MPRA (Fine-tuned) (K562)': pal[4],
         'AG (HepG2)': pal[3],
-        'AG (501bp) (HepG2)': pal[0],
-        'AG MPRA (HepG2)': pal[4]
+        'AG (384bp) (HepG2)': pal[0],
+        'AG (501bp) (HepG2)': pal[3],  # #394165 color for 501bp version
+        'AG MPRA (Probing) (HepG2)': pal[5],
+        'AG MPRA (Fine-tuned) (HepG2)': pal[4]
     }
     
     for idx, snp_type in enumerate(snp_types):
         ax = axes[idx]
-        data_subset = dat_long[dat_long['snp_type'] == snp_type]
+        data_subset = dat_long_plot[dat_long_plot['snp_type'] == snp_type]
         
         # Filter to only include model-cell combinations that exist in the data
         available_model_cells = [mc for mc in model_cell_order if mc in data_subset['model_cell'].values]
@@ -331,9 +387,11 @@ def plot_by_model_and_cell(dat_long, pal, include_501bp=True, figsize=(20, 6)):
         xtick_positions = ax.get_xticks()
         model_cell_to_xpos = {label.get_text(): pos for pos, label in zip(xtick_positions, ax.get_xticklabels())}
         
-        # Calculate statistics for title (only AG MPRA, aggregated across cell types)
-        ag_mpra_data = data_subset[data_subset['model'] == 'AG MPRA']
-        n_total = ag_mpra_data['n'].sum()
+        # Calculate statistics for title (AG MPRA fine-tuned, or probing if fine-tuned not available)
+        ag_mpra_data = data_subset[data_subset['model'] == 'AG MPRA (Fine-tuned)']
+        if len(ag_mpra_data) == 0:
+            ag_mpra_data = data_subset[data_subset['model'] == 'AG MPRA (Probing)']
+        n_total = ag_mpra_data['n'].sum() if len(ag_mpra_data) > 0 else 0
         n_elements = len(ag_mpra_data)
         title_parts = [f'{snp_type}', f'N={n_total} SNPs, {n_elements} regulatory elements']
         
@@ -381,13 +439,28 @@ def plot_by_model_and_cell(dat_long, pal, include_501bp=True, figsize=(20, 6)):
                 bbox=dict(boxstyle='round', facecolor='white', alpha=0.9, edgecolor=line_color, linewidth=1.5)
             )
         
+        # Wrap x-axis labels: put "(384bp)", "(501bp)", "(Probing)", or "(Fine-tuned)" on next line
+        labels = [label.get_text() for label in ax.get_xticklabels()]
+        wrapped_labels = []
+        for label in labels:
+            if '(384bp)' in label:
+                wrapped_labels.append(label.replace('(384bp)', '\n(384bp)'))
+            elif '(501bp)' in label:
+                wrapped_labels.append(label.replace('(501bp)', '\n(501bp)'))
+            elif '(Probing)' in label:
+                wrapped_labels.append(label.replace('(Probing)', '\n(Probing)'))
+            elif '(Fine-tuned)' in label:
+                wrapped_labels.append(label.replace('(Fine-tuned)', '\n(Fine-tuned)'))
+            else:
+                wrapped_labels.append(label)
+        
         ax.set_title('\n'.join(title_parts))
         ax.set_xlabel('', fontsize=12)
         ax.set_ylabel('Pearson Correlation')
         ax.set_ylim([0, 1])
         ax.grid(axis='y', alpha=0.3, linestyle='--')
         # Rotate x-axis labels for better readability
-        ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha='right')
+        ax.set_xticklabels(wrapped_labels, rotation=45, ha='right')
     
     plt.tight_layout()
     return fig
@@ -417,6 +490,7 @@ def plot_augmentation_comparison(non_aug_dat_long, aug_dat_long, pal, figsize=(1
         if 'shift' in model_str or 'revcomp' in model_str:
             # Remove everything after first augmentation marker
             # e.g., "AG (shift±20,n=3) (revcomp)" -> "AG"
+            # e.g., "AG MPRA (Probing) (shift±20,n=3)" -> "AG MPRA (Probing)"
             # e.g., "AG (501bp) (shift±20,n=3)" -> "AG" (501bp models in aug_dat should be converted to base)
             parts = model_str.split(' (')
             if len(parts) > 1:
@@ -425,6 +499,12 @@ def plot_augmentation_comparison(non_aug_dat_long, aug_dat_long, pal, figsize=(1
                 if 'shift' in parts[1] or 'revcomp' in parts[1]:
                     # First part is the base
                     return first_part
+                elif 'probing' in parts[1].lower():
+                    # Has probing with augmentation - preserve "AG MPRA (Probing)"
+                    if len(parts) > 2 and ('shift' in parts[2] or 'revcomp' in parts[2]):
+                        return f"{first_part} ({parts[1].split(')')[0]})"  # Return "AG MPRA (Probing)"
+                    else:
+                        return f"{first_part} ({parts[1].split(')')[0]})"  # "AG MPRA (Probing)" -> "AG MPRA (Probing)"
                 elif '501bp' in parts[1]:
                     # Has 501bp with augmentation - convert to base "AG" for comparison
                     if len(parts) > 2 and ('shift' in parts[2] or 'revcomp' in parts[2]):
@@ -432,7 +512,7 @@ def plot_augmentation_comparison(non_aug_dat_long, aug_dat_long, pal, figsize=(1
                     else:
                         # This shouldn't happen since we filtered out non-augmented 501bp, but handle it
                         return first_part  # "AG (501bp)" -> "AG"
-        # For non-augmented models (should only be "AG" or "AG MPRA" at this point)
+        # For non-augmented models (should only be "AG", "AG MPRA (Fine-tuned)", or "AG MPRA (Probing)" at this point)
         # If somehow a 501bp model got through, convert it
         if '501bp' in model_str:
             return model_str.split(' (')[0]  # "AG (501bp)" -> "AG"
@@ -447,8 +527,8 @@ def plot_augmentation_comparison(non_aug_dat_long, aug_dat_long, pal, figsize=(1
     fig, axes = plt.subplots(1, 2, figsize=figsize)
     snp_types = ['All SNPs', 'High Confidence SNPs']
     
-    # Define model order: AG before AG MPRA
-    model_order = ['AG', 'AG MPRA']
+    # Define model order: AG, AG MPRA (Probing), AG MPRA (Fine-tuned)
+    model_order = ['AG', 'AG MPRA (Probing)', 'AG MPRA (Fine-tuned)']
     
     for idx, snp_type in enumerate(snp_types):
         ax = axes[idx]
@@ -457,8 +537,8 @@ def plot_augmentation_comparison(non_aug_dat_long, aug_dat_long, pal, figsize=(1
         # Filter to only include models that exist in the data
         available_models = [m for m in model_order if m in data_subset['base_model'].values]
         
-        # Create grouped violin plot
-        sns.violinplot(
+        # Create grouped bar plot
+        sns.barplot(
             data=data_subset,
             x='base_model',
             y='pearson_r',
@@ -466,16 +546,17 @@ def plot_augmentation_comparison(non_aug_dat_long, aug_dat_long, pal, figsize=(1
             ax=ax,
             order=available_models,
             palette={'No Augmentation': pal[3], 'With Augmentation': pal[4]},
-            inner=None,
-            alpha=0.8
+            alpha=0.8,
+            estimator='mean',
+            errorbar=None
         )
         
-        # Get x positions
+        # Get x positions and bar positions
         xtick_positions = ax.get_xticks()
-        # Use available_models to ensure consistent ordering
-        base_models = available_models
         
-        # Add mean lines and text for each group
+        # Add mean values on top of bars
+        # Color mapping to match bar colors
+        aug_colors = {'No Augmentation': pal[3], 'With Augmentation': pal[4]}
         for i, base_model in enumerate(available_models):
             x_pos = xtick_positions[i]
             for aug_type, offset in [('No Augmentation', -0.2), ('With Augmentation', 0.2)]:
@@ -485,38 +566,46 @@ def plot_augmentation_comparison(non_aug_dat_long, aug_dat_long, pal, figsize=(1
                 ]
                 if len(group_data) > 0:
                     mean_val = group_data['pearson_r'].mean()
-                    color = pal[3] if aug_type == 'No Augmentation' else pal[4]
-                    ax.plot(
-                        [x_pos + offset - 0.15, x_pos + offset + 0.15],
-                        [mean_val, mean_val],
-                        color=color,
-                        linestyle='--',
-                        linewidth=2,
-                        alpha=0.9,
-                        zorder=5
-                    )
+                    # Add text on top of bar with color matching the bar
                     ax.text(
                         x_pos + offset,
-                        mean_val - 0.4,
-                        f'μ={mean_val:.3f}',
+                        mean_val + 0.02,
+                        f'{mean_val:.3f}',
                         ha='center',
                         va='bottom',
-                        fontsize=8,
+                        fontsize=10,
                         fontweight='bold',
-                        color=color,
-                        bbox=dict(boxstyle='round', facecolor='white', alpha=0.9, edgecolor=color, linewidth=1)
+                        color=aug_colors[aug_type]
                     )
         
-        # Calculate stats for title
-        ag_mpra_data = data_subset[data_subset['base_model'] == 'AG MPRA']
+        # Calculate stats for title (AG MPRA fine-tuned, or probing if fine-tuned not available)
+        ag_mpra_data = data_subset[data_subset['base_model'] == 'AG MPRA (Fine-tuned)']
+        if len(ag_mpra_data) == 0:
+            ag_mpra_data = data_subset[data_subset['base_model'] == 'AG MPRA (Probing)']
         n_total = ag_mpra_data['n'].sum() if len(ag_mpra_data) > 0 else 0
         n_elements = len(ag_mpra_data['element'].unique()) if len(ag_mpra_data) > 0 else 0
         title_parts = [f'{snp_type}', f'N={n_total} SNPs, {n_elements} regulatory elements']
         
+        # Wrap x-axis labels: put "(384bp)", "(501bp)", "(Probing)", or "(Fine-tuned)" on next line
+        labels = [label.get_text() for label in ax.get_xticklabels()]
+        wrapped_labels = []
+        for label in labels:
+            if '(384bp)' in label:
+                wrapped_labels.append(label.replace('(384bp)', '\n(384bp)'))
+            elif '(501bp)' in label:
+                wrapped_labels.append(label.replace('(501bp)', '\n(501bp)'))
+            elif '(Probing)' in label:
+                wrapped_labels.append(label.replace('(Probing)', '\n(Probing)'))
+            elif '(Fine-tuned)' in label:
+                wrapped_labels.append(label.replace('(Fine-tuned)', '\n(Fine-tuned)'))
+            else:
+                wrapped_labels.append(label)
+        ax.set_xticklabels(wrapped_labels)
+        
         ax.set_title('\n'.join(title_parts))
-        ax.set_xlabel('Model', fontsize=12)
+        ax.set_xlabel('', fontsize=0)
         ax.set_ylabel('Pearson Correlation')
-        ax.set_ylim([0, 1])
+        ax.set_ylim([0.5, 1])
         if idx == 1:
             ax.legend(title='', loc='upper right', bbox_to_anchor=(-.05, 1.22), frameon=False)
         else:
@@ -555,6 +644,12 @@ def plot_augmentation_comparison_by_cell(non_aug_dat_long, aug_dat_long, pal, fi
                 first_part = parts[0]
                 if 'shift' in parts[1] or 'revcomp' in parts[1]:
                     return first_part
+                elif 'probing' in parts[1].lower():
+                    # Has probing with augmentation - preserve "AG MPRA (Probing)"
+                    if len(parts) > 2 and ('shift' in parts[2] or 'revcomp' in parts[2]):
+                        return f"{first_part} ({parts[1].split(')')[0]})"  # Return "AG MPRA (Probing)"
+                    else:
+                        return f"{first_part} ({parts[1].split(')')[0]})"  # "AG MPRA (Probing)" -> "AG MPRA (Probing)"
                 elif '501bp' in parts[1]:
                     # Has 501bp with augmentation - convert to base "AG" for comparison
                     if len(parts) > 2 and ('shift' in parts[2] or 'revcomp' in parts[2]):
@@ -562,7 +657,7 @@ def plot_augmentation_comparison_by_cell(non_aug_dat_long, aug_dat_long, pal, fi
                     else:
                         # This shouldn't happen since we filtered out non-augmented 501bp, but handle it
                         return first_part  # "AG (501bp)" -> "AG"
-        # For non-augmented models (should only be "AG" or "AG MPRA" at this point)
+        # For non-augmented models (should only be "AG", "AG MPRA (Fine-tuned)", or "AG MPRA (Probing)" at this point)
         # If somehow a 501bp model got through, convert it
         if '501bp' in model_str:
             return model_str.split(' (')[0]  # "AG (501bp)" -> "AG"
@@ -583,7 +678,7 @@ def plot_augmentation_comparison_by_cell(non_aug_dat_long, aug_dat_long, pal, fi
     
     # Get unique model_cell combinations and create order
     model_cell_order = []
-    for model in ['AG', 'AG MPRA']:
+    for model in ['AG', 'AG MPRA (Probing)', 'AG MPRA (Fine-tuned)']:
         for cell in ['K562', 'HepG2']:
             model_cell_order.append(f'{model} ({cell})')
     
@@ -591,8 +686,8 @@ def plot_augmentation_comparison_by_cell(non_aug_dat_long, aug_dat_long, pal, fi
         ax = axes[idx]
         data_subset = combined_dat[combined_dat['snp_type'] == snp_type]
         
-        # Create grouped violin plot
-        sns.violinplot(
+        # Create grouped bar plot
+        sns.barplot(
             data=data_subset,
             x='model_cell',
             y='pearson_r',
@@ -600,14 +695,17 @@ def plot_augmentation_comparison_by_cell(non_aug_dat_long, aug_dat_long, pal, fi
             ax=ax,
             order=model_cell_order,
             palette={'No Augmentation': pal[3], 'With Augmentation': pal[4]},
-            inner=None,
-            alpha=0.8
+            alpha=0.8,
+            estimator='mean',
+            errorbar=None
         )
         
         # Get x positions
         xtick_positions = ax.get_xticks()
         
-        # Add mean lines and text for each group
+        # Add mean values on top of bars
+        # Color mapping to match bar colors
+        aug_colors = {'No Augmentation': pal[3], 'With Augmentation': pal[4]}
         for i, model_cell in enumerate(model_cell_order):
             x_pos = xtick_positions[i]
             for aug_type, offset in [('No Augmentation', -0.2), ('With Augmentation', 0.2)]:
@@ -617,38 +715,46 @@ def plot_augmentation_comparison_by_cell(non_aug_dat_long, aug_dat_long, pal, fi
                 ]
                 if len(group_data) > 0:
                     mean_val = group_data['pearson_r'].mean()
-                    color = pal[3] if aug_type == 'No Augmentation' else pal[4]
-                    ax.plot(
-                        [x_pos + offset - 0.15, x_pos + offset + 0.15],
-                        [mean_val, mean_val],
-                        color=color,
-                        linestyle='--',
-                        linewidth=2,
-                        alpha=0.9,
-                        zorder=5
-                    )
+                    # Add text on top of bar with color matching the bar
                     ax.text(
                         x_pos + offset,
-                        mean_val - 0.4,
-                        f'μ={mean_val:.3f}',
+                        mean_val + 0.02,
+                        f'{mean_val:.3f}',
                         ha='center',
                         va='bottom',
-                        fontsize=8,
+                        fontsize=9,
                         fontweight='bold',
-                        color=color,
-                        bbox=dict(boxstyle='round', facecolor='white', alpha=0.9, edgecolor=color, linewidth=1)
+                        color=aug_colors[aug_type]
                     )
         
-        # Calculate stats for title
-        ag_mpra_data = data_subset[data_subset['base_model'] == 'AG MPRA']
+        # Calculate stats for title (AG MPRA fine-tuned, or probing if fine-tuned not available)
+        ag_mpra_data = data_subset[data_subset['base_model'] == 'AG MPRA (Fine-tuned)']
+        if len(ag_mpra_data) == 0:
+            ag_mpra_data = data_subset[data_subset['base_model'] == 'AG MPRA (Probing)']
         n_total = ag_mpra_data['n'].sum() if len(ag_mpra_data) > 0 else 0
         n_elements = len(ag_mpra_data['element'].unique()) if len(ag_mpra_data) > 0 else 0
         title_parts = [f'{snp_type}', f'N={n_total} SNPs, {n_elements} regulatory elements']
         
+        # Wrap x-axis labels: put "(384bp)", "(501bp)", "(Probing)", or "(Fine-tuned)" on next line
+        labels = [label.get_text() for label in ax.get_xticklabels()]
+        wrapped_labels = []
+        for label in labels:
+            if '(384bp)' in label:
+                wrapped_labels.append(label.replace('(384bp)', '\n(384bp)'))
+            elif '(501bp)' in label:
+                wrapped_labels.append(label.replace('(501bp)', '\n(501bp)'))
+            elif '(Probing)' in label:
+                wrapped_labels.append(label.replace('(Probing)', '\n(Probing)'))
+            elif '(Fine-tuned)' in label:
+                wrapped_labels.append(label.replace('(Fine-tuned)', '\n(Fine-tuned)'))
+            else:
+                wrapped_labels.append(label)
+        ax.set_xticklabels(wrapped_labels, rotation=45, ha='right')
+        
         ax.set_title('\n'.join(title_parts))
         ax.set_xlabel('Model (Cell Type)', fontsize=12)
         ax.set_ylabel('Pearson Correlation')
-        ax.set_ylim([0, 1])
+        ax.set_ylim([0.5, 1])
         #only plot legend for second plot
         if idx == 1:
             ax.legend(title='', loc='upper right', bbox_to_anchor=(.98, 1.22), frameon=False)
@@ -656,7 +762,6 @@ def plot_augmentation_comparison_by_cell(non_aug_dat_long, aug_dat_long, pal, fi
             #remove legend all together
             ax.legend().remove()
         ax.grid(axis='y', alpha=0.3, linestyle='--')
-        ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha='right')
     
     plt.tight_layout()
     return fig
