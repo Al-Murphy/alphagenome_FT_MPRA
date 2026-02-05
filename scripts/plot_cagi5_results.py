@@ -505,6 +505,12 @@ def plot_augmentation_comparison(non_aug_dat_long, aug_dat_long, pal, figsize=(1
                         return f"{first_part} ({parts[1].split(')')[0]})"  # Return "AG MPRA (Probing)"
                     else:
                         return f"{first_part} ({parts[1].split(')')[0]})"  # "AG MPRA (Probing)" -> "AG MPRA (Probing)"
+                elif 'fine-tuned' in parts[1].lower():
+                    # Has fine-tuned with augmentation - preserve "AG MPRA (Fine-tuned)"
+                    if len(parts) > 2 and ('shift' in parts[2] or 'revcomp' in parts[2]):
+                        return f"{first_part} ({parts[1].split(')')[0]})"  # Return "AG MPRA (Fine-tuned)"
+                    else:
+                        return f"{first_part} ({parts[1].split(')')[0]})"  # "AG MPRA (Fine-tuned)" -> "AG MPRA (Fine-tuned)"
                 elif '501bp' in parts[1]:
                     # Has 501bp with augmentation - convert to base "AG" for comparison
                     if len(parts) > 2 and ('shift' in parts[2] or 'revcomp' in parts[2]):
@@ -650,6 +656,12 @@ def plot_augmentation_comparison_by_cell(non_aug_dat_long, aug_dat_long, pal, fi
                         return f"{first_part} ({parts[1].split(')')[0]})"  # Return "AG MPRA (Probing)"
                     else:
                         return f"{first_part} ({parts[1].split(')')[0]})"  # "AG MPRA (Probing)" -> "AG MPRA (Probing)"
+                elif 'fine-tuned' in parts[1].lower():
+                    # Has fine-tuned with augmentation - preserve "AG MPRA (Fine-tuned)"
+                    if len(parts) > 2 and ('shift' in parts[2] or 'revcomp' in parts[2]):
+                        return f"{first_part} ({parts[1].split(')')[0]})"  # Return "AG MPRA (Fine-tuned)"
+                    else:
+                        return f"{first_part} ({parts[1].split(')')[0]})"  # "AG MPRA (Fine-tuned)" -> "AG MPRA (Fine-tuned)"
                 elif '501bp' in parts[1]:
                     # Has 501bp with augmentation - convert to base "AG" for comparison
                     if len(parts) > 2 and ('shift' in parts[2] or 'revcomp' in parts[2]):
@@ -757,7 +769,7 @@ def plot_augmentation_comparison_by_cell(non_aug_dat_long, aug_dat_long, pal, fi
         ax.set_ylim([0.5, 1])
         #only plot legend for second plot
         if idx == 1:
-            ax.legend(title='', loc='upper right', bbox_to_anchor=(.98, 1.22), frameon=False)
+            ax.legend(title='', loc='upper right', bbox_to_anchor=(.98, 1.25), frameon=False)
         else:
             #remove legend all together
             ax.legend().remove()

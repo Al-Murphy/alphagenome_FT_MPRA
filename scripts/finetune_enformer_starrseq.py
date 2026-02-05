@@ -232,12 +232,6 @@ class EnformerDeepSTARRLightning(pl.LightningModule):
         
         # Freeze Enformer encoder initially (Stage 1)
         self._freeze_encoder()
-        
-        # Verify we have trainable parameters
-        trainable_params = [p for p in self.parameters() if p.requires_grad]
-        if len(trainable_params) == 0:
-            raise RuntimeError("No trainable parameters found after freezing encoder! Check model setup.")
-        print(f"✓ Trainable parameters: {sum(p.numel() for p in trainable_params):,}")
     
     def _freeze_encoder(self):
         """Freeze Enformer encoder (Stage 1: train head only)."""
@@ -323,22 +317,18 @@ class EnformerDeepSTARRLightning(pl.LightningModule):
     
     def configure_optimizers(self):
         """Configure optimizer and learning rate scheduler."""
-        # Filter to only trainable parameters (exclude frozen encoder)
-        trainable_params = [p for p in self.parameters() if p.requires_grad]
-        
-        if len(trainable_params) == 0:
-            raise RuntimeError("No trainable parameters found! Check that the head is not frozen.")
-        
         # Select optimizer
+        # Note: PyTorch optimizers automatically ignore parameters with requires_grad=False
+        # For flatten pooling, to_tracks will be created on first forward pass
         if self.optimizer_name.lower() == 'adamw':
             optimizer = torch.optim.AdamW(
-                trainable_params,
+                self.parameters(),
                 lr=self.learning_rate,
                 weight_decay=self.weight_decay if self.weight_decay else 0.0
             )
         else:  # adam
             optimizer = torch.optim.Adam(
-                trainable_params,
+                self.parameters(),
                 lr=self.learning_rate,
                 weight_decay=self.weight_decay if self.weight_decay else 0.0
             )
@@ -590,29 +580,6 @@ def main():
         center_bp=args.center_bp,
     )
     print("✓ Model created")
-    
-    # For flatten pooling, we need to do a dummy forward pass to initialize the to_tracks module
-    # This ensures the optimizer knows about all parameters from the start
-    # Note: This will be done automatically on first forward pass, but doing it early
-    # helps ensure the optimizer is configured correctly
-    if args.pooling_type == 'flatten':
-        print("Initializing flatten pooling layers with dummy forward pass...")
-        model.eval()
-        with torch.no_grad():
-            # Get a sample from the dataset to determine input size
-            sample_seq, _ = data_module.train_dataset[0]
-            # Add batch dimension - use CPU for now, will be moved to GPU by Lightning
-            dummy_batch = sample_seq.unsqueeze(0)
-            try:
-                _ = model.forward(dummy_batch)
-            except RuntimeError as e:
-                # If device error, that's okay - it will be initialized on first real forward pass
-                if "device" in str(e).lower() or "cuda" in str(e).lower():
-                    print("  Note: Will initialize on first forward pass (device not set yet)")
-                else:
-                    raise
-        model.train()
-        print("✓ Flatten pooling layers initialized")
     
     # Setup callbacks
     callbacks = [

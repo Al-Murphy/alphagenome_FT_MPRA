@@ -346,6 +346,12 @@ class EncoderDeepSTARRHead(nn.Module):
                 nl_size = [nl_size]
         self.hidden_sizes = nl_size
         
+        # Store attributes needed for _build_flatten_layers
+        self.do = do
+        self.activation = activation
+        self.num_tracks = num_tracks
+        self.output_activation = output_activation
+        
         # Use pytorch enformer style of setting layers to identity beyond where we want
         self.enformer = deepcopy(enformer)
         # Keeping stem and conv tower as is....
@@ -357,10 +363,12 @@ class EncoderDeepSTARRHead(nn.Module):
         layers = []
         
         if pooling_type == 'flatten':
-            # For flatten, we need to compute the flattened size
-            # This will be set dynamically based on input sequence length
-            # We'll use a placeholder that gets replaced in forward
-            input_size = None  # Will be computed dynamically
+            # For flatten, estimate size based on typical DeepSTARR sequence length
+            # DeepSTARR: 249bp sequence + 25bp upstream + 26bp downstream = 300bp
+            # Enformer resolution: 128bp per position → 300/128 ≈ 2.34 → 3 positions
+            # Use same approach as MPRA: ENCODER_DIM * 3
+            estimated_positions = 3  # Safe estimate for 300bp sequences
+            input_size = ENCODER_DIM * estimated_positions
         else:
             # For other pooling types, compute center window size
             center_window_positions = max(1, int(center_bp / ENCODER_RESOLUTION_BP))
@@ -368,10 +376,7 @@ class EncoderDeepSTARRHead(nn.Module):
         
         # Build hidden layers
         prev_size = input_size
-        for i, hidden_size in enumerate(self.hidden_sizes):
-            if i == 0 and pooling_type == 'flatten':
-                # First layer will be created dynamically
-                break
+        for hidden_size in self.hidden_sizes:
             layers.append(nn.Linear(prev_size, hidden_size))
             if do is not None and do > 0:
                 layers.append(nn.Dropout(do))
@@ -382,20 +387,17 @@ class EncoderDeepSTARRHead(nn.Module):
             prev_size = hidden_size
         
         # Output layer
-        if pooling_type != 'flatten':
-            layers.append(nn.Linear(prev_size, num_tracks))
-            if output_activation is not None:
-                layers.append(output_activation)
-            self.to_tracks = Sequential(*layers)
-            self.use_dynamic = False
+        layers.append(nn.Linear(prev_size, num_tracks))
+        if output_activation is not None:
+            layers.append(output_activation)
+        
+        # For flatten pooling, initialize with estimated size but allow dynamic rebuild
+        if pooling_type == 'flatten':
+            # Initialize with estimated size - will be rebuilt on first forward if needed
+            self.to_tracks = self._build_flatten_layers(input_size)
+            self._initialized_flatten_size = input_size
         else:
-            # For flatten, we'll build layers dynamically
-            self.to_tracks = None  # Will be built on first forward pass
-            self.use_dynamic = True
-            self.num_tracks = num_tracks
-            self.do = do
-            self.activation = activation
-            self.output_activation = output_activation
+            self.to_tracks = Sequential(*layers)
     
     def _build_flatten_layers(self, flattened_size):
         """Build layers for flatten pooling dynamically."""
@@ -450,14 +452,14 @@ class EncoderDeepSTARRHead(nn.Module):
             batch_size = embeddings.shape[0]
             flattened = embeddings.reshape(batch_size, -1)
             
-            # Build layers dynamically if needed
-            if self.to_tracks is None:
+            # Check if we need to rebuild layers (if actual size differs from estimate)
+            if not hasattr(self, '_initialized_flatten_size') or self._initialized_flatten_size != flattened.shape[1]:
+                # Rebuild layers with actual size
                 self.to_tracks = self._build_flatten_layers(flattened.shape[1])
+                self._initialized_flatten_size = flattened.shape[1]
                 # Move to same device as embeddings
                 device = flattened.device
                 self.to_tracks = self.to_tracks.to(device)
-                # Register as a submodule so PyTorch tracks it properly
-                self.add_module('to_tracks', self.to_tracks)
             
             preds = self.to_tracks(flattened)
         elif self.pooling_type == 'center':
