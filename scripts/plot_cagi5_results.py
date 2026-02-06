@@ -123,6 +123,18 @@ def load_cagi5_data(results_dir, include_augmented=True):
         elif parts[1] == "finetuned":
             dat_i["model"] = "AG MPRA (Fine-tuned)" + aug_suffix
             dat_i["cell_type"] = parts[2]
+        elif parts[1] == "enformer" and len(parts) >= 4 and parts[2] == "mpra":
+            # Enf. MPRA files: cagi5_enformer_mpra_{cell_type}_{stage}
+            stage = parts[4] if len(parts) > 4 else "stage1"  # Default to stage1 if not found
+            # Map stage1 -> Probing, stage2 -> Fine-tuned (to match AlphaGenome naming)
+            if stage == "stage1":
+                stage_label = "Probing"
+            elif stage == "stage2":
+                stage_label = "Fine-tuned"
+            else:
+                stage_label = stage.replace("stage", "Stage ").title()  # Fallback
+            dat_i["model"] = f"Enf. MPRA ({stage_label})" + aug_suffix
+            dat_i["cell_type"] = parts[3]
         else:
             # Fallback
             dat_i["model"] = "Unknown"
@@ -173,9 +185,9 @@ def plot_by_model(dat_long, pal, include_501bp=True, figsize=(12, 5)):
     snp_types = ['All SNPs', 'High Confidence SNPs']
     
     if include_501bp:
-        model_order = ['AG (501bp)', 'AG (384bp)', 'AG MPRA (Probing)', 'AG MPRA (Fine-tuned)']
+        model_order = ['AG (501bp)', 'AG (384bp)', 'AG MPRA (Probing)', 'AG MPRA (Fine-tuned)', 'Enf. MPRA (Probing)', 'Enf. MPRA (Fine-tuned)']
     else:
-        model_order = ['AG', 'AG MPRA (Probing)', 'AG MPRA (Fine-tuned)']
+        model_order = ['AG', 'AG MPRA (Probing)', 'AG MPRA (Fine-tuned)', 'Enf. MPRA (Probing)', 'Enf. MPRA (Fine-tuned)']
     
     # Color mapping for models
     model_colors = {
@@ -183,7 +195,9 @@ def plot_by_model(dat_long, pal, include_501bp=True, figsize=(12, 5)):
         'AG (384bp)': pal[0],  # Different shade for 384bp version
         'AG (501bp)': pal[3],  # #394165 color for 501bp version
         'AG MPRA (Probing)': pal[5],  # Different color for probing
-        'AG MPRA (Fine-tuned)': pal[4]
+        'AG MPRA (Fine-tuned)': pal[4],
+        'Enf. MPRA (Probing)': pal[9],
+        'Enf. MPRA (Fine-tuned)': pal[6] 
     }
     
     # Create a copy of data and rename AG to AG (384bp) for display when include_501bp=True
@@ -268,7 +282,7 @@ def plot_by_model(dat_long, pal, include_501bp=True, figsize=(12, 5)):
                 f'μ={mean_pearson:.3f}',
                 ha='center',
                 va='bottom',
-                fontsize=9,
+                fontsize=8,
                 fontweight='bold',
                 color=line_color,
                 bbox=dict(boxstyle='round', facecolor='white', alpha=0.9, edgecolor=line_color, linewidth=1.5)
@@ -294,7 +308,10 @@ def plot_by_model(dat_long, pal, include_501bp=True, figsize=(12, 5)):
                 wrapped_labels.append(label.replace('(Fine-tuned)', '\n(Fine-tuned)'))
             else:
                 wrapped_labels.append(label)
-        ax.set_xticklabels(wrapped_labels)
+        if include_501bp:
+            ax.set_xticklabels(wrapped_labels,fontsize=7.5)
+        else:
+            ax.set_xticklabels(wrapped_labels,fontsize=9)
     
     plt.tight_layout()
     return fig
@@ -333,21 +350,29 @@ def plot_by_model_and_cell(dat_long, pal, include_501bp=True, figsize=(20, 6)):
             'AG (501bp) (K562)',
             'AG (384bp) (K562)', 
             'AG MPRA (Probing) (K562)',
-            'AG MPRA (Fine-tuned) (K562)', 
+            'AG MPRA (Fine-tuned) (K562)',
+            'Enf. MPRA (Probing) (K562)',
+            'Enf. MPRA (Fine-tuned) (K562)',
             'AG (501bp) (HepG2)',
             'AG (384bp) (HepG2)', 
             'AG MPRA (Probing) (HepG2)',
-            'AG MPRA (Fine-tuned) (HepG2)'
+            'AG MPRA (Fine-tuned) (HepG2)',
+            'Enf. MPRA (Probing) (HepG2)',
+            'Enf. MPRA (Fine-tuned) (HepG2)'
         ]
     else:
         # Define order: AG (K562), AG MPRA (Probing) (K562), AG MPRA (Fine-tuned) (K562), AG (HepG2), AG MPRA (Probing) (HepG2), AG MPRA (Fine-tuned) (HepG2)
         model_cell_order = [
             'AG (K562)', 
             'AG MPRA (Probing) (K562)',
-            'AG MPRA (Fine-tuned) (K562)', 
+            'AG MPRA (Fine-tuned) (K562)',
+            'Enf. MPRA (Probing) (K562)',
+            'Enf. MPRA (Fine-tuned) (K562)',
             'AG (HepG2)', 
             'AG MPRA (Probing) (HepG2)',
-            'AG MPRA (Fine-tuned) (HepG2)'
+            'AG MPRA (Fine-tuned) (HepG2)',
+            'Enf. MPRA (Probing) (HepG2)',
+            'Enf. MPRA (Fine-tuned) (HepG2)'
         ]
     
     # Color mapping for model-cell combinations
@@ -357,11 +382,15 @@ def plot_by_model_and_cell(dat_long, pal, include_501bp=True, figsize=(20, 6)):
         'AG (501bp) (K562)': pal[3],  # #394165 color for 501bp version
         'AG MPRA (Probing) (K562)': pal[5],
         'AG MPRA (Fine-tuned) (K562)': pal[4],
+        'Enf. MPRA (Probing) (K562)': pal[9],  
+        'Enf. MPRA (Fine-tuned) (K562)': pal[6],
         'AG (HepG2)': pal[3],
         'AG (384bp) (HepG2)': pal[0],
         'AG (501bp) (HepG2)': pal[3],  # #394165 color for 501bp version
         'AG MPRA (Probing) (HepG2)': pal[5],
-        'AG MPRA (Fine-tuned) (HepG2)': pal[4]
+        'AG MPRA (Fine-tuned) (HepG2)': pal[4],
+        'Enf. MPRA (Probing) (HepG2)': pal[9],
+        'Enf. MPRA (Fine-tuned) (HepG2)': pal[6]  # #1d6cb1
     }
     
     for idx, snp_type in enumerate(snp_types):
@@ -433,7 +462,7 @@ def plot_by_model_and_cell(dat_long, pal, include_501bp=True, figsize=(20, 6)):
                 f'μ={mean_pearson:.3f}',
                 ha='center',
                 va='bottom',
-                fontsize=9,
+                fontsize=8,
                 fontweight='bold',
                 color=line_color,
                 bbox=dict(boxstyle='round', facecolor='white', alpha=0.9, edgecolor=line_color, linewidth=1.5)
@@ -460,7 +489,7 @@ def plot_by_model_and_cell(dat_long, pal, include_501bp=True, figsize=(20, 6)):
         ax.set_ylim([0, 1])
         ax.grid(axis='y', alpha=0.3, linestyle='--')
         # Rotate x-axis labels for better readability
-        ax.set_xticklabels(wrapped_labels, rotation=45, ha='right')
+        ax.set_xticklabels(wrapped_labels, rotation=45, ha='right', fontsize=9)
     
     plt.tight_layout()
     return fig
@@ -511,6 +540,18 @@ def plot_augmentation_comparison(non_aug_dat_long, aug_dat_long, pal, figsize=(1
                         return f"{first_part} ({parts[1].split(')')[0]})"  # Return "AG MPRA (Fine-tuned)"
                     else:
                         return f"{first_part} ({parts[1].split(')')[0]})"  # "AG MPRA (Fine-tuned)" -> "AG MPRA (Fine-tuned)"
+                elif 'stage 1' in parts[1].lower() or 'stage1' in parts[1].lower():
+                    # Has Stage 1 with augmentation - preserve "Enf. MPRA (Stage 1)"
+                    if len(parts) > 2 and ('shift' in parts[2] or 'revcomp' in parts[2]):
+                        return f"{first_part} ({parts[1].split(')')[0]})"  # Return "Enf. MPRA (Stage 1)"
+                    else:
+                        return f"{first_part} ({parts[1].split(')')[0]})"  # "Enf. MPRA (Stage 1)" -> "Enf. MPRA (Stage 1)"
+                elif 'stage 2' in parts[1].lower() or 'stage2' in parts[1].lower():
+                    # Has Stage 2 with augmentation - preserve "Enf. MPRA (Stage 2)"
+                    if len(parts) > 2 and ('shift' in parts[2] or 'revcomp' in parts[2]):
+                        return f"{first_part} ({parts[1].split(')')[0]})"  # Return "Enf. MPRA (Stage 2)"
+                    else:
+                        return f"{first_part} ({parts[1].split(')')[0]})"  # "Enf. MPRA (Stage 2)" -> "Enf. MPRA (Stage 2)"
                 elif '501bp' in parts[1]:
                     # Has 501bp with augmentation - convert to base "AG" for comparison
                     if len(parts) > 2 and ('shift' in parts[2] or 'revcomp' in parts[2]):
@@ -518,7 +559,7 @@ def plot_augmentation_comparison(non_aug_dat_long, aug_dat_long, pal, figsize=(1
                     else:
                         # This shouldn't happen since we filtered out non-augmented 501bp, but handle it
                         return first_part  # "AG (501bp)" -> "AG"
-        # For non-augmented models (should only be "AG", "AG MPRA (Fine-tuned)", or "AG MPRA (Probing)" at this point)
+        # For non-augmented models (should only be "AG", "AG MPRA (Fine-tuned)", "AG MPRA (Probing)", or "Enf. MPRA (Stage 1/2)" at this point)
         # If somehow a 501bp model got through, convert it
         if '501bp' in model_str:
             return model_str.split(' (')[0]  # "AG (501bp)" -> "AG"
@@ -533,8 +574,8 @@ def plot_augmentation_comparison(non_aug_dat_long, aug_dat_long, pal, figsize=(1
     fig, axes = plt.subplots(1, 2, figsize=figsize)
     snp_types = ['All SNPs', 'High Confidence SNPs']
     
-    # Define model order: AG, AG MPRA (Probing), AG MPRA (Fine-tuned)
-    model_order = ['AG', 'AG MPRA (Probing)', 'AG MPRA (Fine-tuned)']
+    # Define model order: AG, AG MPRA (Probing), AG MPRA (Fine-tuned), Enf. MPRA (Probing), Enf. MPRA (Fine-tuned)
+    model_order = ['AG', 'AG MPRA (Probing)', 'AG MPRA (Fine-tuned)', 'Enf. MPRA (Probing)', 'Enf. MPRA (Fine-tuned)']
     
     for idx, snp_type in enumerate(snp_types):
         ax = axes[idx]
@@ -579,7 +620,7 @@ def plot_augmentation_comparison(non_aug_dat_long, aug_dat_long, pal, figsize=(1
                         f'{mean_val:.3f}',
                         ha='center',
                         va='bottom',
-                        fontsize=10,
+                        fontsize=8,
                         fontweight='bold',
                         color=aug_colors[aug_type]
                     )
@@ -606,7 +647,7 @@ def plot_augmentation_comparison(non_aug_dat_long, aug_dat_long, pal, figsize=(1
                 wrapped_labels.append(label.replace('(Fine-tuned)', '\n(Fine-tuned)'))
             else:
                 wrapped_labels.append(label)
-        ax.set_xticklabels(wrapped_labels)
+        ax.set_xticklabels(wrapped_labels, fontsize=9)
         
         ax.set_title('\n'.join(title_parts))
         ax.set_xlabel('', fontsize=0)
@@ -623,7 +664,7 @@ def plot_augmentation_comparison(non_aug_dat_long, aug_dat_long, pal, figsize=(1
     return fig
 
 
-def plot_augmentation_comparison_by_cell(non_aug_dat_long, aug_dat_long, pal, figsize=(22, 6)):
+def plot_augmentation_comparison_by_cell(non_aug_dat_long, aug_dat_long, pal, figsize=(30, 6)):
     """Create plot comparing non-augmented vs augmented models split by cell line.
     
     Args:
@@ -657,11 +698,17 @@ def plot_augmentation_comparison_by_cell(non_aug_dat_long, aug_dat_long, pal, fi
                     else:
                         return f"{first_part} ({parts[1].split(')')[0]})"  # "AG MPRA (Probing)" -> "AG MPRA (Probing)"
                 elif 'fine-tuned' in parts[1].lower():
-                    # Has fine-tuned with augmentation - preserve "AG MPRA (Fine-tuned)"
+                    # Has fine-tuned with augmentation - preserve "AG MPRA (Fine-tuned)" or "Enf. MPRA (Fine-tuned)"
                     if len(parts) > 2 and ('shift' in parts[2] or 'revcomp' in parts[2]):
-                        return f"{first_part} ({parts[1].split(')')[0]})"  # Return "AG MPRA (Fine-tuned)"
+                        return f"{first_part} ({parts[1].split(')')[0]})"  # Return "AG MPRA (Fine-tuned)" or "Enf. MPRA (Fine-tuned)"
                     else:
-                        return f"{first_part} ({parts[1].split(')')[0]})"  # "AG MPRA (Fine-tuned)" -> "AG MPRA (Fine-tuned)"
+                        return f"{first_part} ({parts[1].split(')')[0]})"  # "AG MPRA (Fine-tuned)" -> "AG MPRA (Fine-tuned)" or "Enf. MPRA (Fine-tuned)" -> "Enf. MPRA (Fine-tuned)"
+                elif 'probing' in parts[1].lower() and ('enf' in first_part.lower() or 'enformer' in first_part.lower()):
+                    # Has Enf. MPRA (Probing) with augmentation - preserve "Enf. MPRA (Probing)"
+                    if len(parts) > 2 and ('shift' in parts[2] or 'revcomp' in parts[2]):
+                        return f"{first_part} ({parts[1].split(')')[0]})"  # Return "Enf. MPRA (Probing)"
+                    else:
+                        return f"{first_part} ({parts[1].split(')')[0]})"  # "Enf. MPRA (Probing)" -> "Enf. MPRA (Probing)"
                 elif '501bp' in parts[1]:
                     # Has 501bp with augmentation - convert to base "AG" for comparison
                     if len(parts) > 2 and ('shift' in parts[2] or 'revcomp' in parts[2]):
@@ -669,7 +716,7 @@ def plot_augmentation_comparison_by_cell(non_aug_dat_long, aug_dat_long, pal, fi
                     else:
                         # This shouldn't happen since we filtered out non-augmented 501bp, but handle it
                         return first_part  # "AG (501bp)" -> "AG"
-        # For non-augmented models (should only be "AG", "AG MPRA (Fine-tuned)", or "AG MPRA (Probing)" at this point)
+        # For non-augmented models (should only be "AG", "AG MPRA (Fine-tuned)", "AG MPRA (Probing)", or "Enf. MPRA (Probing/Fine-tuned)" at this point)
         # If somehow a 501bp model got through, convert it
         if '501bp' in model_str:
             return model_str.split(' (')[0]  # "AG (501bp)" -> "AG"
@@ -690,7 +737,7 @@ def plot_augmentation_comparison_by_cell(non_aug_dat_long, aug_dat_long, pal, fi
     
     # Get unique model_cell combinations and create order
     model_cell_order = []
-    for model in ['AG', 'AG MPRA (Probing)', 'AG MPRA (Fine-tuned)']:
+    for model in ['AG', 'AG MPRA (Probing)', 'AG MPRA (Fine-tuned)', 'Enf. MPRA (Probing)', 'Enf. MPRA (Fine-tuned)']:
         for cell in ['K562', 'HepG2']:
             model_cell_order.append(f'{model} ({cell})')
     
@@ -734,7 +781,7 @@ def plot_augmentation_comparison_by_cell(non_aug_dat_long, aug_dat_long, pal, fi
                         f'{mean_val:.3f}',
                         ha='center',
                         va='bottom',
-                        fontsize=9,
+                        fontsize=8,
                         fontweight='bold',
                         color=aug_colors[aug_type]
                     )
@@ -761,10 +808,10 @@ def plot_augmentation_comparison_by_cell(non_aug_dat_long, aug_dat_long, pal, fi
                 wrapped_labels.append(label.replace('(Fine-tuned)', '\n(Fine-tuned)'))
             else:
                 wrapped_labels.append(label)
-        ax.set_xticklabels(wrapped_labels, rotation=45, ha='right')
+        ax.set_xticklabels(wrapped_labels, rotation=45, ha='right', fontsize=9)
         
         ax.set_title('\n'.join(title_parts))
-        ax.set_xlabel('Model (Cell Type)', fontsize=12)
+        ax.set_xlabel('Model (Cell Type)', fontsize=10)
         ax.set_ylabel('Pearson Correlation')
         ax.set_ylim([0.5, 1])
         #only plot legend for second plot
@@ -985,7 +1032,7 @@ def main():
             # Plot augmentation comparison by model and cell
             print("  Generating augmentation comparison plot (by model and cell)...")
             fig_aug_cell = plot_augmentation_comparison_by_cell(
-                non_aug_dat_long, aug_dat_long, pal, figsize=(22, 6)
+                non_aug_dat_long, aug_dat_long, pal, figsize=(30, 6)
             )
             save_plots(
                 fig_aug_cell,

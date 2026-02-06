@@ -473,15 +473,15 @@ def main():
     parser.add_argument('--lr_scheduler', type=str, default=None, choices=['plateau', 'cosine'])
     parser.add_argument('--second_stage_lr', type=float, default=1e-5)
     parser.add_argument('--second_stage_epochs', type=int, default=50)
-    parser.add_argument('--early_stopping_patience', type=int, default=5)
+    parser.add_argument('--early_stopping_patience', type=int, default=10)
     parser.add_argument('--checkpoint_dir', type=str, default='./results/models/checkpoints/enformer/')
     parser.add_argument('--wandb_project', type=str, default='enformer-deepstarr')
-    parser.add_argument('--wandb_name', type=str, default=None)
+    parser.add_argument('--wandb_name', type=str, default="bs32-512-512-do06-noWD")
     parser.add_argument('--no_wandb', action='store_true')
     
     # Model parameters
     parser.add_argument('--nl_size', type=str, default='512,512', help='Hidden layer sizes: single int or comma-separated list')
-    parser.add_argument('--do', type=float, default=0.5, help='Dropout rate')
+    parser.add_argument('--do', type=float, default=0.6, help='Dropout rate')
     parser.add_argument('--activation', type=str, default='relu', choices=['relu', 'gelu'])
     parser.add_argument('--pooling_type', type=str, default='flatten', choices=['flatten', 'mean', 'sum', 'max', 'center'])
     parser.add_argument('--center_bp', type=int, default=256, help='Center bp for non-flatten pooling')

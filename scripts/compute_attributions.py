@@ -468,6 +468,10 @@ def compute_attributions(model, sequence, organism_index, method='deepshap', hea
             random_state=kwargs.get('random_state', 42),
             output_index=kwargs.get('output_index', None),
         )
+        # Center DeepSHAP attributions by subtracting the mean across bases at each position.
+        # This is a visualization choice that helps when inspecting relative contributions
+        # across bases at a position, making it easier to see which bases are preferred.
+        attributions = attributions - jnp.mean(attributions, axis=-1, keepdims=True)
     elif method == 'gradient':
         attributions = model.compute_input_gradients(
             sequence=sequence,
@@ -484,6 +488,11 @@ def compute_attributions(model, sequence, organism_index, method='deepshap', hea
             gradients_x_input=True,
             output_index=kwargs.get('output_index', None),
         )
+        # Optionally center gradient×input attributions by subtracting the
+        # mean across bases at each position. This is a visualization choice
+        # (not required by the method itself) and can help when inspecting
+        # relative contributions across bases at a position.
+        attributions = attributions - jnp.mean(attributions, axis=-1, keepdims=True)
     else:
         raise ValueError(f"Unknown attribution method: {method}. Must be one of: deepshap, gradient, gradient_x_input")
     
@@ -667,19 +676,23 @@ def generate_plots(model, sequence, attributions, sequence_str, output_dir, meth
                 sequence=sequence,
                 gradients=attributions,
                 save_path=str(save_path),
-                logo_type='information',  # Will be overridden by mask_to_sequence=True
-                mask_to_sequence=True  # Standard for DeepSHAP: raw values, masked to sequence
+                logo_type='weight',   # Use raw scores (no normalization)
+                mask_to_sequence=False,  # Show all four bases at each position
+                use_absolute=False,      # Preserve signed DeepSHAP attributions
             )
         elif method == 'gradient_x_input':
-            # For gradient×input, use raw values (unnormalized) - standard practice
-            # This shows the actual gradient×input attribution values
+            # For gradient×input with mean correction, show all bases at each position
+            # so we can see relative preferences (which bases are preferred/dispreferred
+            # relative to the mean at each position). Mean correction is applied before
+            # visualization, so values are centered around zero per position.
             save_path = output_dir / 'sequence_logo_gradient_x_input.png'
             model.plot_sequence_logo(
                 sequence=sequence,
                 gradients=attributions,
                 save_path=str(save_path),
-                logo_type='weight',  # Raw values, no normalization
-                mask_to_sequence=False  # Show all bases
+                logo_type='weight',      # Raw mean-corrected values
+                mask_to_sequence=False,  # Show all bases to see relative preferences
+                use_absolute=False       # Preserve signed values (positive = preferred, negative = dispreferred)
             )
         else:  # gradient
             save_path = output_dir / f'sequence_logo_{method}_information.png'
