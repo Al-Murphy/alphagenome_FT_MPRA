@@ -135,6 +135,10 @@ def load_cagi5_data(results_dir, include_augmented=True):
                 stage_label = stage.replace("stage", "Stage ").title()  # Fallback
             dat_i["model"] = f"Enf. MPRA ({stage_label})" + aug_suffix
             dat_i["cell_type"] = parts[3]
+        elif parts[1] == "mpralegnet":
+            # MPRALegNet files: cagi5_mpralegnet_{cell_type}_{checkpoint_name}
+            dat_i["model"] = "MPRALegNet" + aug_suffix
+            dat_i["cell_type"] = parts[2]
         else:
             # Fallback
             dat_i["model"] = "Unknown"
@@ -172,7 +176,7 @@ def prepare_data(dat):
     return dat_long
 
 
-def plot_by_model(dat_long, pal, include_501bp=True, figsize=(12, 5)):
+def plot_by_model(dat_long, pal, include_501bp=True, figsize=(15, 5)):
     """Create violin plot comparing AG vs AG (501bp) vs AG MPRA (aggregated across cell types).
     
     Args:
@@ -185,9 +189,9 @@ def plot_by_model(dat_long, pal, include_501bp=True, figsize=(12, 5)):
     snp_types = ['All SNPs', 'High Confidence SNPs']
     
     if include_501bp:
-        model_order = ['AG (501bp)', 'AG (384bp)', 'AG MPRA (Probing)', 'AG MPRA (Fine-tuned)', 'Enf. MPRA (Probing)', 'Enf. MPRA (Fine-tuned)']
+        model_order = ['MPRALegNet','Enf. MPRA (Probing)', 'Enf. MPRA (Fine-tuned)','AG (501bp)', 'AG (384bp)', 'AG MPRA (Probing)', 'AG MPRA (Fine-tuned)']
     else:
-        model_order = ['AG', 'AG MPRA (Probing)', 'AG MPRA (Fine-tuned)', 'Enf. MPRA (Probing)', 'Enf. MPRA (Fine-tuned)']
+        model_order = ['MPRALegNet','Enf. MPRA (Probing)', 'Enf. MPRA (Fine-tuned)','AG', 'AG MPRA (Probing)', 'AG MPRA (Fine-tuned)']
     
     # Color mapping for models
     model_colors = {
@@ -197,7 +201,8 @@ def plot_by_model(dat_long, pal, include_501bp=True, figsize=(12, 5)):
         'AG MPRA (Probing)': pal[5],  # Different color for probing
         'AG MPRA (Fine-tuned)': pal[4],
         'Enf. MPRA (Probing)': pal[9],
-        'Enf. MPRA (Fine-tuned)': pal[6] 
+        'Enf. MPRA (Fine-tuned)': pal[6],
+        'MPRALegNet': pal[2]  # #1d6cb1
     }
     
     # Create a copy of data and rename AG to AG (384bp) for display when include_501bp=True
@@ -306,12 +311,14 @@ def plot_by_model(dat_long, pal, include_501bp=True, figsize=(12, 5)):
                 wrapped_labels.append(label.replace('(Probing)', '\n(Probing)'))
             elif '(Fine-tuned)' in label:
                 wrapped_labels.append(label.replace('(Fine-tuned)', '\n(Fine-tuned)'))
+            elif 'MPRALegNet' in label:
+                wrapped_labels.append(label.replace('MPRALegNet', 'MPRA\nLegNet'))
             else:
                 wrapped_labels.append(label)
         if include_501bp:
             ax.set_xticklabels(wrapped_labels,fontsize=7.5)
         else:
-            ax.set_xticklabels(wrapped_labels,fontsize=9)
+            ax.set_xticklabels(wrapped_labels,fontsize=8.5)
     
     plt.tight_layout()
     return fig
@@ -353,26 +360,30 @@ def plot_by_model_and_cell(dat_long, pal, include_501bp=True, figsize=(20, 6)):
             'AG MPRA (Fine-tuned) (K562)',
             'Enf. MPRA (Probing) (K562)',
             'Enf. MPRA (Fine-tuned) (K562)',
+            'MPRALegNet (K562)',
             'AG (501bp) (HepG2)',
             'AG (384bp) (HepG2)', 
             'AG MPRA (Probing) (HepG2)',
             'AG MPRA (Fine-tuned) (HepG2)',
             'Enf. MPRA (Probing) (HepG2)',
-            'Enf. MPRA (Fine-tuned) (HepG2)'
+            'Enf. MPRA (Fine-tuned) (HepG2)',
+            'MPRALegNet (HepG2)'
         ]
     else:
         # Define order: AG (K562), AG MPRA (Probing) (K562), AG MPRA (Fine-tuned) (K562), AG (HepG2), AG MPRA (Probing) (HepG2), AG MPRA (Fine-tuned) (HepG2)
         model_cell_order = [
+            'MPRALegNet (K562)',
+            'Enf. MPRA (Probing) (K562)',
+            'Enf. MPRA (Fine-tuned) (K562)',
             'AG (K562)', 
             'AG MPRA (Probing) (K562)',
             'AG MPRA (Fine-tuned) (K562)',
-            'Enf. MPRA (Probing) (K562)',
-            'Enf. MPRA (Fine-tuned) (K562)',
+            'MPRALegNet (HepG2)',
+            'Enf. MPRA (Probing) (HepG2)',
+            'Enf. MPRA (Fine-tuned) (HepG2)',
             'AG (HepG2)', 
             'AG MPRA (Probing) (HepG2)',
             'AG MPRA (Fine-tuned) (HepG2)',
-            'Enf. MPRA (Probing) (HepG2)',
-            'Enf. MPRA (Fine-tuned) (HepG2)'
         ]
     
     # Color mapping for model-cell combinations
@@ -384,13 +395,15 @@ def plot_by_model_and_cell(dat_long, pal, include_501bp=True, figsize=(20, 6)):
         'AG MPRA (Fine-tuned) (K562)': pal[4],
         'Enf. MPRA (Probing) (K562)': pal[9],  
         'Enf. MPRA (Fine-tuned) (K562)': pal[6],
+        'MPRALegNet (K562)': pal[2],
         'AG (HepG2)': pal[3],
         'AG (384bp) (HepG2)': pal[0],
         'AG (501bp) (HepG2)': pal[3],  # #394165 color for 501bp version
         'AG MPRA (Probing) (HepG2)': pal[5],
         'AG MPRA (Fine-tuned) (HepG2)': pal[4],
         'Enf. MPRA (Probing) (HepG2)': pal[9],
-        'Enf. MPRA (Fine-tuned) (HepG2)': pal[6]  # #1d6cb1
+        'Enf. MPRA (Fine-tuned) (HepG2)': pal[6],
+        'MPRALegNet (HepG2)': pal[2]
     }
     
     for idx, snp_type in enumerate(snp_types):
@@ -574,8 +587,8 @@ def plot_augmentation_comparison(non_aug_dat_long, aug_dat_long, pal, figsize=(1
     fig, axes = plt.subplots(1, 2, figsize=figsize)
     snp_types = ['All SNPs', 'High Confidence SNPs']
     
-    # Define model order: AG, AG MPRA (Probing), AG MPRA (Fine-tuned), Enf. MPRA (Probing), Enf. MPRA (Fine-tuned)
-    model_order = ['AG', 'AG MPRA (Probing)', 'AG MPRA (Fine-tuned)', 'Enf. MPRA (Probing)', 'Enf. MPRA (Fine-tuned)']
+    # Define model order: AG, AG MPRA (Probing), AG MPRA (Fine-tuned), Enf. MPRA (Probing), Enf. MPRA (Fine-tuned), MPRALegNet
+    model_order = ['MPRALegNet','Enf. MPRA (Probing)', 'Enf. MPRA (Fine-tuned)','AG', 'AG MPRA (Probing)', 'AG MPRA (Fine-tuned)']
     
     for idx, snp_type in enumerate(snp_types):
         ax = axes[idx]
@@ -737,7 +750,7 @@ def plot_augmentation_comparison_by_cell(non_aug_dat_long, aug_dat_long, pal, fi
     
     # Get unique model_cell combinations and create order
     model_cell_order = []
-    for model in ['AG', 'AG MPRA (Probing)', 'AG MPRA (Fine-tuned)', 'Enf. MPRA (Probing)', 'Enf. MPRA (Fine-tuned)']:
+    for model in ['MPRALegNet','Enf. MPRA (Probing)', 'Enf. MPRA (Fine-tuned)','AG', 'AG MPRA (Probing)', 'AG MPRA (Fine-tuned)']:
         for cell in ['K562', 'HepG2']:
             model_cell_order.append(f'{model} ({cell})')
     
