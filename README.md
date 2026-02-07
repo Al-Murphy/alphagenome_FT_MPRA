@@ -2,71 +2,95 @@
 
 ![Modular Generalist seq2func models](assets/images/modular_generalists.png)
 
-## Generalist Seq2func models (AlphaGenome/Enformer) MPRA Finetuning
+## Generalist Seq2Func Models for MPRA Finetuning
 
-This repository demonstrates finetuning AlphaGenome (and Enformer) on MPRA (Massively Parallel Reporter Assay) data using the [`alphagenome-ft`](https://github.com/YOUR_USERNAME/alphagenome_ft) package.
+This repository demonstrates finetuning **generalist seq2func models** (AlphaGenome, Enformer, and others) on MPRA (Massively Parallel Reporter Assay) data. The modular approach shown here can be applied to **any generalist seq2func model** that provides sequence embeddings, making it a flexible framework for regulatory sequence prediction tasks.
 
-The goal is to finetune AlphaGenome to predict reporter activity from genomic sequences, with downstream applications to lentiMPRA data.
+The goal is to use pretrained generalist models as **modular encoders** that can be finetuned to predict reporter activity from genomic sequences, with downstream applications to lentiMPRA and DeepSTARR datasets. This approach leverages the rich sequence representations learned by large-scale generalist models while adapting them to specific regulatory tasks through task-specific prediction heads.
 
 ## Installation
 
 ### Prerequisites
 
-1. Install AlphaGenome Research:
+1. **For AlphaGenome models**: Install AlphaGenome Research:
 ```bash
 pip install git+https://github.com/google-deepmind/alphagenome_research.git
 ```
 
-2. Install this project:
+2. **For Enformer models**: Install Enformer PyTorch:
+```bash
+pip install enformer-pytorch
+```
+
+3. Install this project:
 ```bash
 git clone https://github.com/YOUR_USERNAME/alphagenome_FT_MPRA.git
 cd alphagenome_FT_MPRA
 pip install -e .
 ```
 
-This will automatically install the `alphagenome-ft` package as a dependency.
+This will automatically install the `alphagenome-ft` package as a dependency (for AlphaGenome models) and other required packages.
 
 ## Architecture
 
-AlphaGenome Model Architecture:
+### Modular Encoder Approach
 
+This project demonstrates a **modular approach** to using generalist seq2func models:
+
+```
 DNA Sequence (B, S, 4)
     ↓
-SequenceEncoder (convolutional downsampling)
+Generalist Model Backbone (frozen)
+    ├── AlphaGenome: Encoder → Transformer → Decoder
+    ├── Enformer: Convolutional blocks → Transformer → Output heads
+    └── Other seq2func models...
     ↓
-TransformerTower (9 transformer blocks with pairwise attention)
+Sequence Embeddings (extracted from backbone)
+    ├── High-resolution embeddings (1bp)
+    ├── Low-resolution embeddings (128bp)
+    └── Architecture-specific features
     ↓
-SequenceDecoder (convolutional upsampling)
-    ↓
-Embeddings:
-  - embeddings_1bp: (B, S, 1536) - High resolution
-  - embeddings_128bp: (B, S//128, 3072) - Low resolution  
-  - embeddings_pair: (B, S//2048, S//2048, 128) - Pairwise
-    ↓
-Heads (task-specific predictions):
-  - ATAC, DNASE, RNA_SEQ, etc.
-  - YOUR_CUSTOM_HEAD ← Add here
-  
-1. **Backbone**: Encoder + Transformer + Decoder 
-2. **Embeddings**: Multi-resolution representations 
-3. **Heads**: Task-specific prediction layers
+Custom Task-Specific Heads (trainable)
+    ├── MPRAHead: Reporter activity prediction
+    ├── DeepSTARRHead: Enhancer activity prediction
+    └── YOUR_CUSTOM_HEAD ← Add here
+```
 
-**Fine-tuning: Custom Heads**: Define and register your own prediction heads for task-specific finetuning.
+### Supported Models
 
-This project uses the [`alphagenome-ft`](https://github.com/Al-Murphy/alphagenome_ft) package for finetuning utilities. See that repository for full documentation on:
-- Creating custom prediction heads
-- Parameter freezing and management
-- Model wrapping and configuration
+1. **AlphaGenome**: 
+   - Multi-resolution embeddings (1bp, 128bp, pairwise)
+   - Uses [`alphagenome-ft`](https://github.com/Al-Murphy/alphagenome_ft) for finetuning utilities
+   - See that repository for documentation on custom heads, parameter freezing, and model wrapping
+
+2. **Enformer**:
+   - Encoder-level embeddings at 128bp resolution
+   - PyTorch implementation with custom heads
+   - See `src/enf_utils.py` for Enformer-specific utilities
+
+3. **Other Generalist Models**:
+   - The modular approach can be extended to any seq2func model
+   - Key requirement: ability to extract sequence embeddings from the backbone
+   - Custom heads can be implemented following the same pattern
+
+### Fine-tuning Strategy
+
+1. **Backbone**: Freeze pretrained generalist model (encoder/transformer layers)
+2. **Embeddings**: Extract multi-resolution sequence representations
+3. **Heads**: Train task-specific prediction layers on top of frozen embeddings
+
+This approach allows leveraging rich pretrained representations while efficiently adapting to new tasks.
 
 
 ## Quick Start
 
-
+### AlphaGenome Example
 
 ```python
 import jax
 import jax.numpy as jnp
 from alphagenome_research.model import dna_model
+from alphagenome.models import dna_output
 from alphagenome_ft import (
     CustomHead,
     HeadConfig,
@@ -75,9 +99,9 @@ from alphagenome_ft import (
     wrap_pretrained_model,
     add_custom_heads_to_model,
 )
-from src.ft_utils import MPRAHead
+from src.mpra_heads import MPRAHead
 
-# 1. Register custom MPRA head (already defined in src/ft_utils.py)
+# 1. Register custom MPRA head
 register_custom_head(
     'mpra_head',
     MPRAHead,
@@ -86,7 +110,7 @@ register_custom_head(
         name='mpra_head',
         output_type=dna_output.OutputType.RNA_SEQ,
         num_tracks=1,
-        metadata={'center_window_size': 128, 'pooling_type': 'mean'}
+        metadata={'center_bp': 128, 'pooling_type': 'flatten', 'embedding_mode': '1bp'}
     )
 )
 
@@ -99,23 +123,122 @@ model = add_custom_heads_to_model(model, custom_heads=['mpra_head'])
 model.freeze_backbone()
 
 # 4. Train on your MPRA data
-# ... your training loop here ...
+# See scripts/finetune_mpra.py for complete training example
+```
+
+### Enformer Example
+
+```python
+import torch
+from enformer_pytorch import from_pretrained
+from src.enf_utils import EncoderMPRAHead
+
+# 1. Load pretrained Enformer
+enformer = from_pretrained('EleutherAI/enformer-official-rough', use_tf_gamma=False)
+
+# 2. Create model with custom MPRA head
+model = EncoderMPRAHead(
+    enformer=enformer,
+    num_tracks=1,
+    center_bp=256,
+    pooling_type='sum'
+)
+
+# 3. Freeze Enformer backbone (only train head)
+model.freeze_backbone()
+
+# 4. Train on your MPRA data
+# See scripts/finetune_enformer_mpra.py for complete training example
+```
+
+### Using Configuration Files
+
+For both AlphaGenome and Enformer, you can use pre-configured hyperparameters:
+
+```bash
+# AlphaGenome with LentiMPRA
+python scripts/finetune_mpra.py --config configs/mpra_HepG2.json
+
+# Enformer with LentiMPRA
+python scripts/finetune_enformer_mpra.py --config configs/mpra_HepG2.json
+
+# AlphaGenome with DeepSTARR
+python scripts/finetune_starrseq.py --config configs/starrseq.json
+
+# Enformer with DeepSTARR
+python scripts/finetune_enformer_starrseq.py --config configs/starrseq.json
 ```
 
 ## Project Structure
 
 ```
 alphagenome_FT_MPRA/
-├── src/
-│   ├── ft_utils.py          # Custom MPRAHead definition
+├── src/                      # Source code
+│   ├── mpra_heads.py         # Custom prediction heads (MPRAHead, EncoderMPRAHead, DeepSTARRHead)
+│   ├── enf_utils.py          # Enformer-specific utilities and heads
+│   ├── data.py               # Data loading classes (LentiMPRADataset, DeepSTARRDataset)
+│   ├── seq_loader.py         # Sequence loading utilities
+│   ├── training.py            # Training utilities and helpers
 │   └── __init__.py
-├── data/
-│   └── legnet_lentimpra/    # MPRA training data
-├── test.ipynb               # Example notebook
-├── README.md
-└── pyproject.toml
+├── scripts/                  # Executable training and evaluation scripts
+│   ├── finetune_mpra.py      # Finetune AlphaGenome on LentiMPRA
+│   ├── finetune_enformer_mpra.py  # Finetune Enformer on LentiMPRA
+│   ├── finetune_starrseq.py  # Finetune AlphaGenome on DeepSTARR
+│   ├── finetune_enformer_starrseq.py  # Finetune Enformer on DeepSTARR
+│   ├── test_ft_model_*.py    # Evaluation scripts for finetuned models
+│   ├── test_cagi5_zero_shot_*.py  # Zero-shot evaluation on CAGI5 benchmark
+│   ├── compute_attributions.py  # Attribution analysis (DeepSHAP, gradients)
+│   ├── cache_embeddings.py   # Pre-compute embeddings for faster training
+│   ├── create_mpra_comparison_table.py  # Generate performance comparison tables
+│   └── README.md             # Script documentation
+├── configs/                  # Hyperparameter configuration files
+│   ├── mpra_HepG2.json       # Optimal config for HepG2 cell line
+│   ├── mpra_K562.json        # Optimal config for K562 cell line
+│   ├── mpra_WTC11.json       # Optimal config for WTC11 cell line
+│   ├── starrseq.json         # Optimal config for DeepSTARR dataset
+│   └── README.md             # Config file documentation
+├── data/                     # Datasets
+│   ├── legnet_lentimpra/     # LentiMPRA training data
+│   ├── deepstarr/            # DeepSTARR dataset
+│   ├── cagi5/                # CAGI5 benchmark data
+│   └── motifs/               # Motif analysis data
+├── results/                  # Training outputs and evaluations
+│   ├── models/               # Saved model checkpoints
+│   ├── benchmark_*.csv       # Benchmark results
+│   ├── plots/                # Generated plots and figures
+│   └── mpralegnet_predictions/  # LegNet baseline predictions
+├── assets/                    # Images and figures
+│   └── images/
+│       └── modular_generalists.png
+├── test.ipynb                # Example notebook
+├── main.py                   # Entry point
+├── pyproject.toml            # Project dependencies
+└── README.md                 # This file
 ```
+
+## Key Features
+
+- **Model-Agnostic Design**: Works with any generalist seq2func model (AlphaGenome, Enformer, etc.)
+- **Modular Architecture**: Separate frozen backbones from trainable task-specific heads
+- **Multiple Datasets**: Support for LentiMPRA (multiple cell lines) and DeepSTARR
+- **Flexible Embedding Access**: Use different resolution embeddings (1bp, 128bp, encoder-only)
+- **Two-Stage Training**: Optional cached-embedding training for faster iteration
+- **Comprehensive Evaluation**: Zero-shot benchmarks, attribution analysis, and comparison tables
+- **Production-Ready Configs**: Pre-optimized hyperparameters for each dataset/cell line
+
+## Extending to Other Models
+
+To add support for another generalist seq2func model:
+
+1. **Extract Embeddings**: Implement a function to extract sequence embeddings from your model
+2. **Create Custom Head**: Implement a head class (see `src/mpra_heads.py` for examples)
+3. **Wrap Model**: Create a wrapper that freezes the backbone and exposes embeddings
+4. **Add Training Script**: Follow the pattern in `scripts/finetune_*.py`
+
+The key principle is: **freeze the generalist backbone, train only the task-specific head**.
 
 ## License
 
-This project extends AlphaGenome. Please refer to the original AlphaGenome license for usage terms.
+This project extends AlphaGenome and uses Enformer. Please refer to the original licenses:
+- AlphaGenome: See [AlphaGenome Research license](https://github.com/google-deepmind/alphagenome_research)
+- Enformer: See [Enformer license](https://github.com/deepmind/deepmind-research/tree/master/enformer)
