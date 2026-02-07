@@ -1,6 +1,10 @@
-# AlphaGenome MPRA Finetuning
+# Generalist Seq2Func Models as Modular Regulatory Encoders for Perturbation Tasks
 
-This repository demonstrates finetuning AlphaGenome on MPRA (Massively Parallel Reporter Assay) data using the [`alphagenome-ft`](https://github.com/YOUR_USERNAME/alphagenome_ft) package.
+![Modular Generalist seq2func models](assets/images/modular_generalists.png)
+
+## Generalist Seq2func models (AlphaGenome/Enformer) MPRA Finetuning
+
+This repository demonstrates finetuning AlphaGenome (and Enformer) on MPRA (Massively Parallel Reporter Assay) data using the [`alphagenome-ft`](https://github.com/YOUR_USERNAME/alphagenome_ft) package.
 
 The goal is to finetune AlphaGenome to predict reporter activity from genomic sequences, with downstream applications to lentiMPRA data.
 
