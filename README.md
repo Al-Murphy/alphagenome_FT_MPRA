@@ -6,7 +6,9 @@
 
 This repository demonstrates finetuning **generalist seq2func models** (AlphaGenome, Enformer, and others) on MPRA (Massively Parallel Reporter Assay) data. The modular approach shown here can be applied to **any generalist seq2func model** that provides sequence embeddings, making it a flexible framework for regulatory sequence prediction tasks.
 
-The goal is to use pretrained generalist models as **modular encoders** that can be finetuned to predict reporter activity from genomic sequences, with downstream applications to lentiMPRA and DeepSTARR datasets. This approach leverages the rich sequence representations learned by large-scale generalist models while adapting them to specific regulatory tasks through task-specific prediction heads.
+The goal is to think of any pretrained generalist model as **modular components** that can be used separately for their _cis_-regulatory logic. Here we finetuned the generalists' encoders to predict reporter activity from genomic sequences, applying it to lentiMPRA and DeepSTARR datasets and evaluating performance zero-shot on CAGI5 data. 
+
+This approach leverages the rich sequence representations learned by large-scale generalist models while adapting them to specific regulatory tasks through task-specific prediction heads.
 
 ## Installation
 
