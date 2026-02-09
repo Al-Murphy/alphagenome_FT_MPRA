@@ -213,7 +213,9 @@ def pwm_to_consensus(pwm_matrix, method='max', random_state=None):
 
 def decode_one_hot(one_hot_seq):
     """Convert one-hot encoded sequence back to DNA string."""
-    base_map = {0: 'A', 1: 'T', 2: 'C', 3: 'G'}
+    # IMPORTANT: Match AlphaGenome's canonical channel order: A, C, G, T
+    # See alphagenome_research.model.one_hot_encoder.DNAOneHotEncoder
+    base_map = {0: 'A', 1: 'C', 2: 'G', 3: 'T'}
     seq_str = ''
     # one_hot_seq shape: (batch, length, 4) or (length, 4)
     if one_hot_seq.ndim == 3:
@@ -226,7 +228,8 @@ def decode_one_hot(one_hot_seq):
 
 def one_hot_encode(sequence: str) -> jnp.ndarray:
     """Convert DNA sequence string to one-hot encoding."""
-    base_map = {'A': 0, 'T': 1, 'C': 2, 'G': 3}
+    # Match AlphaGenome's DNAOneHotEncoder channel order: A, C, G, T
+    base_map = {'A': 0, 'C': 1, 'G': 2, 'T': 3}
     seq_len = len(sequence)
     one_hot = jnp.zeros((1, seq_len, 4), dtype=jnp.float32)
     
@@ -457,231 +460,6 @@ def sample_random_sequences(dataset, n=10, random_state=None):
     return sampled
 
 
-def _forward_head_output(
-    model,
-    sequence,
-    organism_index,
-    *,
-    head_name: str,
-    output_index: int | None = None,
-):
-    """
-    Forward pass helper to get the scalar/model output used for ISM.
-    
-    This mirrors the logic used inside CustomAlphaGenomeModel.compute_input_gradients
-    to extract the output for a given custom head and (optionally) output_index,
-    but WITHOUT any summation over positions. It returns the raw head output
-    (after selecting output_index or averaging tracks when output_index is None).
-    """
-    import jax
-    import jax.numpy as jnp
-
-    # Ensure JAX arrays and batch dimension
-    sequence = jnp.array(sequence)
-    if sequence.ndim == 2:
-        sequence = sequence[None, :, :]
-    organism_index = jnp.array(organism_index)
-    if organism_index.ndim == 0:
-        organism_index = organism_index[None]
-
-    # Use the same forward path branches as in compute_input_gradients,
-    # but stop before any scalar reduction.
-    if hasattr(model, "_custom_forward_fn") and model._custom_forward_fn is not None:
-        rng_key = jax.random.PRNGKey(0)
-        result = model._custom_forward_fn(
-            model._params,
-            model._state,
-            rng_key,
-            sequence,
-            organism_index,
-        )
-        if isinstance(result, tuple):
-            predictions_dict, _ = result
-        else:
-            predictions_dict = result
-
-        if isinstance(predictions_dict, dict):
-            output = predictions_dict.get(head_name)
-            available_keys = list(predictions_dict.keys())
-        else:
-            output = None
-            available_keys = f"Type: {type(predictions_dict)}"
-    else:
-        # Fall back to low-level _predict used in gradient code
-        # Use trivial strand arguments (sufficient for MPRA/DeepSTARR FT setups).
-        negative_strand_mask = jnp.zeros((sequence.shape[0],), dtype=jnp.bool_)
-        strand_reindexing = jnp.array([], dtype=jnp.int32)
-
-        predictions = model._predict(
-            model._params,
-            model._state,
-            sequence,
-            organism_index,
-            negative_strand_mask=negative_strand_mask,
-            strand_reindexing=strand_reindexing,
-        )
-
-        # Extract output for the specified head
-        from alphagenome_research.model import model as model_lib  # type: ignore
-
-        _PredictionsDict = getattr(model_lib, "_PredictionsDict", None)
-        if _PredictionsDict is not None and isinstance(predictions, _PredictionsDict):
-            output = predictions._custom.get(head_name)
-            available_keys = list(predictions.keys())
-        elif hasattr(predictions, "get"):
-            output = predictions.get(head_name)
-            available_keys = (
-                list(predictions.keys())
-                if isinstance(predictions, dict)
-                else f"Type: {type(predictions)}"
-            )
-        else:
-            # Try direct access
-            try:
-                output = predictions[head_name]
-                available_keys = list(predictions.keys())
-            except Exception:
-                output = None
-                available_keys = (
-                    list(predictions.keys())
-                    if isinstance(predictions, dict)
-                    else f"Type: {type(predictions)}"
-                )
-
-    if output is None:
-        raise ValueError(
-            f"Output for head '{head_name}' not found in predictions. "
-            f"Available keys: {available_keys}"
-        )
-
-    # Handle multi-track outputs
-    if output_index is not None:
-        # Select specific output track
-        if output.ndim > 1:
-            output = output[..., output_index]
-        else:
-            raise ValueError(
-                f"output_index specified but output is 1D. "
-                f"Output shape: {output.shape}"
-            )
-    else:
-        # Use mean of all tracks if multi-dimensional (e.g. multi-task heads)
-        if output.ndim > 1:
-            output = jnp.mean(output, axis=-1)
-
-    return output
-
-
-def compute_ism_attributions(
-    model,
-    sequence,
-    organism_index,
-    *,
-    head_name: str = "mpra_head",
-    output_index: int | None = None,
-) -> jnp.ndarray:
-    """
-    Compute ISM (in silico mutagenesis) attributions for a single sequence,
-    returning **wildtype-base importance** rather than per-alternative effects.
-
-    Implementation details:
-    - First, for each position and each base (A/T/C/G), we mutate that base,
-      recompute the model output, and store Δ = f(mut) - f(ref).
-    - Then, for each position we identify the wildtype base from the original
-      one-hot sequence and collapse all alternative-base effects into a single
-      score on the wildtype base:
-          WT_importance = -mean_{alt != ref} Δ_alt
-      and set all non-wildtype channels to 0.
-
-    Intuition:
-    - If most alternative mutations are deleterious (Δ_alt < 0), the
-      wildtype importance becomes positive, highlighting bases where the
-      reference allele is crucial for maintaining the prediction.
-    - This yields an attribution map of shape (1, seq_len, 4) where only the
-      wildtype base at each position can be non-zero, directly analogous to
-      gradient×input logos that are masked to the input sequence.
-    """
-    import jax.numpy as jnp
-    import numpy as np
-
-    # Ensure batch dimension
-    sequence = jnp.array(sequence)
-    if sequence.ndim == 2:
-        sequence = sequence[None, :, :]
-    organism_index = jnp.array(organism_index)
-    if organism_index.ndim == 0:
-        organism_index = organism_index[None]
-
-    if sequence.shape[0] != 1:
-        raise ValueError(
-            f"ISM currently supports batch size 1. Got batch size={sequence.shape[0]}"
-        )
-
-    batch, seq_len, num_bases = sequence.shape
-    if num_bases != 4:
-        raise ValueError(
-            f"Expected 4 channels for DNA one-hot, got {num_bases}. "
-            "ISM implementation assumes A/T/C/G channels."
-        )
-
-    # Base prediction for the original sequence
-    base_output = _forward_head_output(
-        model,
-        sequence,
-        organism_index,
-        head_name=head_name,
-        output_index=output_index,
-    )
-    # Reduce to scalar for attribution (handles 0D or 1D outputs)
-    base_scalar = jnp.mean(base_output)
-
-    seq_np = np.asarray(sequence[0])  # (seq_len, 4)
-    # First store full hypothetical ISM matrix (all alt effects)
-    ism_full = np.zeros_like(seq_np, dtype=np.float32)
-
-    # For each position and each base, compute delta prediction
-    for pos in range(seq_len):
-        for b_idx in range(num_bases):
-            mut_seq = np.array(seq_np, copy=True)
-            # Set one-hot at this position to the mutated base
-            mut_seq[pos, :] = 0.0
-            mut_seq[pos, b_idx] = 1.0
-
-            mut_seq_jax = jnp.asarray(mut_seq)[None, :, :]
-            mut_output = _forward_head_output(
-                model,
-                mut_seq_jax,
-                organism_index,
-                head_name=head_name,
-                output_index=output_index,
-            )
-            mut_scalar = jnp.mean(mut_output)
-
-            # Δ = mutated_prediction - reference_prediction
-            ism_full[pos, b_idx] = float(mut_scalar - base_scalar)
-
-    # Collapse alternative SNP effects back onto the wildtype base:
-    # For each position, compute WT_importance = -mean_{alt != ref} Δ_alt,
-    # then assign that value to the wildtype channel and zero out others.
-    ism_wt = np.zeros_like(ism_full, dtype=np.float32)
-    wt_indices = np.argmax(seq_np, axis=-1)  # (seq_len,)
-
-    for pos in range(seq_len):
-        wt_idx = wt_indices[pos]
-        # Collect alternative deltas (exclude WT channel)
-        alt_mask = np.ones(num_bases, dtype=bool)
-        alt_mask[wt_idx] = False
-        alt_deltas = ism_full[pos, alt_mask]
-        if alt_deltas.size > 0:
-            wt_importance = -float(np.mean(alt_deltas))
-        else:
-            wt_importance = 0.0
-        ism_wt[pos, wt_idx] = wt_importance
-
-    # Return wildtype-only attributions with batch dimension
-    return jnp.asarray(ism_wt)[None, :, :]
-
-
 def compute_attributions(model, sequence, organism_index, method='deepshap', head_name='mpra_head', 
                          apply_mean_correction=True, **kwargs):
     """Compute attributions using the specified method.
@@ -728,15 +506,15 @@ def compute_attributions(model, sequence, organism_index, method='deepshap', hea
         if apply_mean_correction:
             attributions = attributions - jnp.mean(attributions, axis=-1, keepdims=True)
     elif method == 'ism':
-        # ISM does not use gradient-based mean correction by default; we return
-        # raw delta scores for each (position, base).
-        attributions = compute_ism_attributions(
-            model,
-            sequence,
-            organism_index,
+        # ISM attributions: wildtype-base importance derived from alternative SNP effects
+        attributions = model.compute_ism_attributions(
+            sequence=sequence,
+            organism_index=organism_index,
             head_name=head_name,
             output_index=kwargs.get('output_index', None),
         )
+        # ISM already returns wildtype-only attributions (non-WT channels are 0),
+        # so no mean correction is needed or applied.
     else:
         raise ValueError(f"Unknown attribution method: {method}. Must be one of: deepshap, gradient, gradient_x_input, ism")
     
