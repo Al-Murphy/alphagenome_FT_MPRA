@@ -52,7 +52,7 @@
   "wandb": {
     "enabled": true,
     "project": "alphagenome-mpra",
-    "wandb_name": "mpra-HepG2-optimal"
+    "wandb_name": "mpra-HepG2-optimal-tst"
   },
   
   "base_checkpoint_path": null
