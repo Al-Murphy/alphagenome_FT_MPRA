@@ -63,7 +63,7 @@ from alphagenome_ft import (
     HeadConfig,
     HeadType,
     register_custom_head,
-    create_model_with_custom_heads,
+    load_checkpoint,
 )
 from src import DeepSTARRHead, DeepSTARRDataset, STARRSeqDataLoader
 
@@ -419,38 +419,6 @@ def main():
             # Fall back to defaults if anything goes wrong reading config.
             pass
 
-    # Load checkpoint early to inspect weight shapes (needed for flatten pooling)
-    import orbax.checkpoint as ocp
-    # Handle checkpoint path - user might pass path ending with 'checkpoint' or 'checkpoint/'
-    if checkpoint_dir.name == 'checkpoint':
-        # User passed path ending with 'checkpoint', use it directly
-        checkpoint_path = checkpoint_dir
-    else:
-        # Try standard checkpoint location
-        checkpoint_path = checkpoint_dir / 'checkpoint'
-        if not checkpoint_path.exists():
-            # Try stage1 subdirectory
-            stage1_path = checkpoint_dir / 'stage1' / 'checkpoint'
-            if stage1_path.exists():
-                checkpoint_path = stage1_path
-            else:
-                raise FileNotFoundError(f"Checkpoint not found at {checkpoint_dir / 'checkpoint'} or {stage1_path}")
-    
-    print(f"\nLoading checkpoint from {checkpoint_path}...")
-    checkpointer = ocp.StandardCheckpointer()
-    loaded_params, loaded_state = checkpointer.restore(checkpoint_path)
-    
-    # For flatten pooling, we need to determine the correct init_seq_len from
-    # the checkpoint's weight shapes. This ensures the model head is initialized
-    # with the same input size as during training.
-    init_seq_len = None  # Default: let model decide
-    
-    if head_metadata.get('pooling_type') == 'flatten':
-        # For flatten pooling, use center_bp from metadata as init_seq_len
-        # This matches how the training script initializes the model
-        init_seq_len = head_metadata.get('center_bp', 256)
-        print(f"Flatten pooling detected, using init_seq_len={init_seq_len}bp from center_bp")
-
     # Register custom DeepSTARR head using (possibly) checkpoint-derived metadata.
     print("\nRegistering custom DeepSTARR head...")
     register_custom_head(
@@ -465,144 +433,26 @@ def main():
         ),
     )
     
-    # Create DeepSTARR model that uses encoder output only (no transformer/decoder),
-    # matching how the model was trained for short enhancer sequences.
-    print("\nCreating DeepSTARR model with encoder output...")
-    model = create_model_with_custom_heads(
-        'all_folds',
-        custom_heads=['deepstarr_head'],
-        checkpoint_path=base_checkpoint_path,
-        use_encoder_output=True,
+    # For flatten pooling, we need to determine the correct init_seq_len from
+    # the checkpoint's metadata. This ensures the model head is initialized
+    # with the same input size as during training.
+    init_seq_len = None  # Default: let model decide
+    
+    if head_metadata.get('pooling_type') == 'flatten':
+        # For flatten pooling, use center_bp from metadata as init_seq_len
+        # This matches how the training script initializes the model
+        init_seq_len = head_metadata.get('center_bp', 256)
+        print(f"Flatten pooling detected, using init_seq_len={init_seq_len}bp from center_bp")
+    
+    # Load trained model using load_checkpoint (now handles minimal models correctly)
+    print("\nLoading trained model...")
+    model = load_checkpoint(
+        str(checkpoint_dir),
+        base_model_version='all_folds',
+        base_checkpoint_path=base_checkpoint_path,
+        device=None,  # Will use default device
         init_seq_len=init_seq_len,
     )
-    
-    # Checkpoint was already loaded above for flatten pooling detection
-    # loaded_params and loaded_state are already available
-
-    # Determine whether this is a full-model checkpoint, minimal-model checkpoint, or heads-only checkpoint.
-    config_path = checkpoint_dir / 'config.json'
-    if not config_path.exists():
-        config_path = checkpoint_path.parent / 'config.json'
-    
-    # Default to full model if no config is found
-    save_full_model = True
-    save_minimal_model = False
-    if config_path.exists():
-        with open(config_path, 'r') as f:
-            cfg = json.load(f)
-        save_full_model = cfg.get('save_full_model', False)
-        save_minimal_model = cfg.get('save_minimal_model', False)
-
-    if save_full_model:
-        # Full model checkpoint: replace entire parameter/state trees
-        print("Detected full-model checkpoint (save_full_model=True). "
-              "Replacing entire parameter/state trees...")
-        model._params = loaded_params
-        model._state = loaded_state
-    elif save_minimal_model:
-        # Minimal model checkpoint: encoder + head only (no transformer/decoder).
-        # We need to merge encoder + head params into the existing model params.
-        print("Detected minimal-model checkpoint (save_minimal_model=True). "
-              "Merging encoder + head parameters into base model.")
-        
-        def merge_minimal_params(base_params, minimal_params):
-            """Merge minimal params (encoder + head) into base params.
-            
-            This mirrors the logic in src.training.train() used for Stage 2.
-            """
-            import copy
-            merged = copy.deepcopy(base_params)
-
-            # Merge encoder parameters (nested structure)
-            if (
-                isinstance(minimal_params, dict)
-                and 'alphagenome' in minimal_params
-                and isinstance(minimal_params['alphagenome'], dict)
-                and 'sequence_encoder' in minimal_params['alphagenome']
-            ):
-                if 'alphagenome' not in merged or not isinstance(merged.get('alphagenome'), dict):
-                    merged['alphagenome'] = {}
-                merged['alphagenome']['sequence_encoder'] = minimal_params['alphagenome']['sequence_encoder']
-
-            # Merge custom head parameters (nested structure)
-            if (
-                isinstance(minimal_params, dict)
-                and 'alphagenome' in minimal_params
-                and isinstance(minimal_params['alphagenome'], dict)
-                and 'head' in minimal_params['alphagenome']
-            ):
-                if 'alphagenome' not in merged or not isinstance(merged.get('alphagenome'), dict):
-                    merged['alphagenome'] = {}
-                if 'head' not in merged['alphagenome']:
-                    merged['alphagenome']['head'] = {}
-                for head_name, head_params in minimal_params['alphagenome']['head'].items():
-                    merged['alphagenome']['head'][head_name] = head_params
-
-            # Also handle flat structure (use_encoder_output=True mode) where keys
-            # may contain 'sequence_encoder' or 'head/{head_name}'.
-            if isinstance(minimal_params, dict):
-                for key, value in minimal_params.items():
-                    key_str = str(key)
-                    if 'sequence_encoder' in key_str or key_str.startswith('head/'):
-                        merged[key] = value
-
-            return merged
-
-        model._params = merge_minimal_params(model._params, loaded_params)
-        if loaded_state:
-            model._state = merge_minimal_params(model._state, loaded_state)
-
-        # Ensure parameters and state are on the correct device
-        device = model._device_context._device
-        model._params = jax.device_put(model._params, device)
-        model._state = jax.device_put(model._state, device)
-    else:
-        # Heads-only checkpoint: merge loaded head params into the existing model
-        print("Detected heads-only checkpoint. Merging head parameters into base model.")
-        def merge_head_params(model_params, loaded_head_params):
-            """Merge loaded head parameters into model parameters."""
-            import copy
-            merged = copy.deepcopy(model_params)
-
-            # Structure 1: Flat keys like 'head/{head_name}/...'
-            if isinstance(loaded_head_params, dict):
-                head_keys = {
-                    k: v
-                    for k, v in loaded_head_params.items()
-                    if isinstance(k, str) and k.startswith('head/')
-                }
-                if head_keys:
-                    for key, value in head_keys.items():
-                        merged[key] = value
-
-            # Structure 2: 'alphagenome/head' (encoder-only mode, nested)
-            if isinstance(loaded_head_params, dict) and 'alphagenome/head' in loaded_head_params:
-                if 'alphagenome/head' not in merged:
-                    merged['alphagenome/head'] = {}
-                for head_name, head_params in loaded_head_params['alphagenome/head'].items():
-                    merged['alphagenome/head'][head_name] = head_params
-
-            # Structure 3: 'alphagenome' -> 'head' (standard mode, nested)
-            if isinstance(loaded_head_params, dict) and 'alphagenome' in loaded_head_params:
-                if isinstance(loaded_head_params['alphagenome'], dict):
-                    if 'head' in loaded_head_params['alphagenome']:
-                        if 'alphagenome' not in merged or not isinstance(merged.get('alphagenome'), dict):
-                            merged['alphagenome'] = {}
-                        if 'head' not in merged['alphagenome']:
-                            merged['alphagenome']['head'] = {}
-                        for head_name, head_params in loaded_head_params['alphagenome']['head'].items():
-                            merged['alphagenome']['head'][head_name] = head_params
-
-            return merged
-
-        model._params = merge_head_params(model._params, loaded_params)
-        model._state = merge_head_params(model._state, loaded_state)
-
-        # Ensure parameters and state are on the correct device
-        device = model._device_context._device
-        model._params = jax.device_put(model._params, device)
-        model._state = jax.device_put(model._state, device)
-
     print("✓ Model loaded successfully")
     
     # Create test dataset

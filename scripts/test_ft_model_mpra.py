@@ -60,7 +60,7 @@ from alphagenome_ft import (
     HeadConfig,
     HeadType,
     register_custom_head,
-    create_model_with_custom_heads,
+    load_checkpoint,
 )
 from src import EncoderMPRAHead, LentiMPRADataset, MPRADataLoader
 
@@ -350,181 +350,20 @@ def main():
         ),
     )
     
-    # Match the training-time model creation for BOTH Stage 1 (heads-only) and
-    # Stage 2 (full-model) checkpoints: encoder-output head on short MPRA
+    # Match the training-time model creation: encoder-output head on short MPRA
     # promoter constructs, with the same init_seq_len used in finetune_mpra.py.
     PROMOTER_CONSTRUCT_LENGTH = 281
     init_seq_len = PROMOTER_CONSTRUCT_LENGTH
-    print(f"\nCreating MPRA model with encoder output (init_seq_len={init_seq_len} bp)...")
-    model = create_model_with_custom_heads(
-        'all_folds',
-        custom_heads=['mpra_head'],
-        checkpoint_path=base_checkpoint_path,
-        use_encoder_output=True,
+    
+    # Load trained model using load_checkpoint (now handles minimal models correctly)
+    print(f"\nLoading trained model (init_seq_len={init_seq_len} bp)...")
+    model = load_checkpoint(
+        str(checkpoint_dir),
+        base_model_version='all_folds',
+        base_checkpoint_path=base_checkpoint_path,
+        device=None,  # Will use default device
         init_seq_len=init_seq_len,
     )
-    
-    # Load checkpoint parameters directly with Orbax into this model
-    import orbax.checkpoint as ocp
-    checkpoint_path = checkpoint_dir / 'checkpoint'
-    if not checkpoint_path.exists():
-        raise FileNotFoundError(f"Checkpoint not found at {checkpoint_path}")
-    
-    print(f"\nLoading checkpoint from {checkpoint_path}...")
-    checkpointer = ocp.StandardCheckpointer()
-    loaded_params, loaded_state = checkpointer.restore(checkpoint_path)
-
-    if save_full_model:
-        # Full-model checkpoint (Stage 2): merge checkpoint params into model structure
-        # to ensure Haiku transform compatibility
-        print("Detected full-model checkpoint (save_full_model=True). "
-              "Merging checkpoint parameters into model structure...")
-        
-        def deep_merge_params(model_params, checkpoint_params):
-            """Recursively merge checkpoint parameters into model parameter structure.
-            
-            This ensures that the Haiku transform structure matches, while replacing
-            all parameter values from the checkpoint.
-            """
-            import copy
-            merged = copy.deepcopy(model_params)
-            
-            if isinstance(checkpoint_params, dict) and isinstance(model_params, dict):
-                for key, checkpoint_value in checkpoint_params.items():
-                    if key in model_params:
-                        # Key exists in both - recurse if both are dicts
-                        if isinstance(model_params[key], dict) and isinstance(checkpoint_value, dict):
-                            merged[key] = deep_merge_params(model_params[key], checkpoint_value)
-                        else:
-                            # Replace with checkpoint value
-                            merged[key] = checkpoint_value
-                    else:
-                        # New key from checkpoint - add it
-                        merged[key] = checkpoint_value
-            else:
-                # Not both dicts - use checkpoint value
-                merged = checkpoint_params
-            
-            return merged
-        
-        model._params = deep_merge_params(model._params, loaded_params)
-        model._state = deep_merge_params(model._state, loaded_state)
-        
-        # Ensure parameters and state are on the correct device
-        device = model._device_context._device
-        model._params = jax.device_put(model._params, device)
-        model._state = jax.device_put(model._state, device)
-    elif save_minimal_model:
-        # Minimal model checkpoint: encoder + head only (no transformer/decoder).
-        # We need to merge encoder + head params into the existing model params.
-        print("Detected minimal-model checkpoint (save_minimal_model=True). "
-              "Merging encoder + head parameters into base model.")
-
-        def merge_minimal_params(base_params, minimal_params):
-            """Merge minimal params (encoder + head) into base params.
-            
-            This mirrors the logic in src.training.train() used for Stage 2.
-            """
-            import copy
-            merged = copy.deepcopy(base_params)
-
-            # Merge encoder parameters (nested structure)
-            if (
-                isinstance(minimal_params, dict)
-                and 'alphagenome' in minimal_params
-                and isinstance(minimal_params['alphagenome'], dict)
-                and 'sequence_encoder' in minimal_params['alphagenome']
-            ):
-                if 'alphagenome' not in merged or not isinstance(merged.get('alphagenome'), dict):
-                    merged['alphagenome'] = {}
-                merged['alphagenome']['sequence_encoder'] = minimal_params['alphagenome']['sequence_encoder']
-
-            # Merge custom head parameters (nested structure)
-            if (
-                isinstance(minimal_params, dict)
-                and 'alphagenome' in minimal_params
-                and isinstance(minimal_params['alphagenome'], dict)
-                and 'head' in minimal_params['alphagenome']
-            ):
-                if 'alphagenome' not in merged or not isinstance(merged.get('alphagenome'), dict):
-                    merged['alphagenome'] = {}
-                if 'head' not in merged['alphagenome']:
-                    merged['alphagenome']['head'] = {}
-                for head_name, head_params in minimal_params['alphagenome']['head'].items():
-                    merged['alphagenome']['head'][head_name] = head_params
-
-            # Also handle flat structure (use_encoder_output=True mode) where keys
-            # may contain 'sequence_encoder' or 'head/{head_name}'.
-            if isinstance(minimal_params, dict):
-                for key, value in minimal_params.items():
-                    key_str = str(key)
-                    if 'sequence_encoder' in key_str or key_str.startswith('head/'):
-                        merged[key] = value
-
-            return merged
-
-        model._params = merge_minimal_params(model._params, loaded_params)
-        if loaded_state:
-            model._state = merge_minimal_params(model._state, loaded_state)
-
-        # Ensure parameters and state are on the correct device
-        device = model._device_context._device
-        model._params = jax.device_put(model._params, device)
-        model._state = jax.device_put(model._state, device)
-    else:
-        # Heads-only checkpoint (Stage 1): merge loaded head params into the
-        # existing model while keeping the pretrained backbone parameters.
-        def merge_head_params(model_params, loaded_head_params):
-            """Merge loaded head parameters into model parameters.
-            
-            This is adapted from alphagenome_ft.custom_model.load_checkpoint and
-            alphagenome_FT_MPRA.src.training._train_stage to support both flat
-            and nested Haiku parameter tree structures.
-            """
-            import copy
-            merged = copy.deepcopy(model_params)
-
-            # Structure 1: Flat keys like 'head/{head_name}/...' (use_encoder_output=True mode)
-            if isinstance(loaded_head_params, dict):
-                head_keys = {
-                    k: v
-                    for k, v in loaded_head_params.items()
-                    if isinstance(k, str) and k.startswith('head/')
-                }
-                if head_keys:
-                    for key, value in head_keys.items():
-                        merged[key] = value
-
-            # Structure 2: 'alphagenome/head' (encoder-only mode, nested)
-            if isinstance(loaded_head_params, dict) and 'alphagenome/head' in loaded_head_params:
-                if 'alphagenome/head' not in merged:
-                    merged['alphagenome/head'] = {}
-                for head_name, head_params in loaded_head_params['alphagenome/head'].items():
-                    merged['alphagenome/head'][head_name] = head_params
-
-            # Structure 3: 'alphagenome' -> 'head' (standard mode, nested)
-            if isinstance(loaded_head_params, dict) and 'alphagenome' in loaded_head_params:
-                if isinstance(loaded_head_params['alphagenome'], dict):
-                    if 'head' in loaded_head_params['alphagenome']:
-                        if 'alphagenome' not in merged or not isinstance(merged.get('alphagenome'), dict):
-                            merged['alphagenome'] = {}
-                        if 'head' not in merged['alphagenome']:
-                            merged['alphagenome']['head'] = {}
-                        for head_name, head_params in loaded_head_params['alphagenome']['head'].items():
-                            merged['alphagenome']['head'][head_name] = head_params
-
-            return merged
-
-        model._params = merge_head_params(model._params, loaded_params)
-        model._state = merge_head_params(model._state, loaded_state)
-        print("Detected heads-only checkpoint (save_full_model=False, save_minimal_model=False). "
-              "Merged head parameters into base model.")
-
-    # Ensure parameters and state are on the correct device
-    device = model._device_context._device
-    model._params = jax.device_put(model._params, device)
-    model._state = jax.device_put(model._state, device)
-
     print("✓ Model loaded successfully")
     
     # Create test dataset

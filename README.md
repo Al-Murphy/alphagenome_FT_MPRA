@@ -189,7 +189,8 @@ alphagenome_FT_MPRA/
 │   ├── finetune_enformer_starrseq.py  # Finetune Enformer on DeepSTARR
 │   ├── test_ft_model_*.py    # Evaluation scripts for finetuned models
 │   ├── test_cagi5_zero_shot_*.py  # Zero-shot evaluation on CAGI5 benchmark
-│   ├── compute_attributions.py  # Attribution analysis (DeepSHAP, gradients)
+│   ├── compute_attributions_lentimpra.py  # Attribution analysis (DeepSHAP, gradients)
+│   ├── compute_attributions_starrseq.py  # Attribution analysis (DeepSHAP, gradients)
 │   ├── cache_embeddings.py   # Pre-compute embeddings for faster training
 │   ├── create_mpra_comparison_table.py  # Generate performance comparison tables
 │   └── README.md             # Script documentation

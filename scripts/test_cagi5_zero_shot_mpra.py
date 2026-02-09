@@ -74,7 +74,7 @@ from alphagenome_ft import (
     HeadConfig,
     HeadType,
     register_custom_head,
-    create_model_with_custom_heads,
+    load_checkpoint,
 )
 from src import EncoderMPRAHead  # type: ignore
 
@@ -474,12 +474,10 @@ def load_finetuned_mpra_model(
 ) -> object:
     """Load fine-tuned AlphaGenome MPRA model (encoder head) from checkpoint_dir.
 
-    This mirrors the logic in `scripts/test_ft_model_mpra.py` so that:
-    - The MPRA head metadata (center_bp, pooling_type, etc.) matches training.
-    - Both Stage 1 (heads-only) and Stage 2 (full-model) checkpoints work.
+    This uses the centralized load_checkpoint function to ensure consistent
+    model loading across all scripts. The MPRA head metadata (center_bp, pooling_type, etc.)
+    matches training, and both Stage 1 (heads-only) and Stage 2 (full-model) checkpoints work.
     """
-    import orbax.checkpoint as ocp
-
     checkpoint_dir = checkpoint_dir.resolve()
     config_path = checkpoint_dir / "config.json"
 
@@ -488,7 +486,6 @@ def load_finetuned_mpra_model(
         "center_bp": 256,
         "pooling_type": "sum",
     }
-    save_full_model = True
 
     if config_path.exists():
         try:
@@ -500,7 +497,6 @@ def load_finetuned_mpra_model(
                 .get("metadata", {})
             )
             head_metadata.update(head_cfg)
-            save_full_model = cfg.get("save_full_model", False)
         except Exception:
             pass
 
@@ -517,93 +513,16 @@ def load_finetuned_mpra_model(
         ),
     )
 
-    # Create model with encoder-output head on short promoter constructs
+    # Load model using centralized load_checkpoint function
+    # This handles minimal models correctly by creating the model structure first
     init_seq_len = PROMOTER_CONSTRUCT_LENGTH
-    model = create_model_with_custom_heads(
-        "all_folds",
-        custom_heads=["mpra_head"],
-        checkpoint_path=base_checkpoint_path,
-        use_encoder_output=True,
+    model = load_checkpoint(
+        str(checkpoint_dir),
+        base_model_version="all_folds",
+        base_checkpoint_path=base_checkpoint_path,
+        device=None,  # Will use default device
         init_seq_len=init_seq_len,
     )
-
-    # Load checkpoint parameters using Orbax
-    checkpoint_path = checkpoint_dir / "checkpoint"
-    if not checkpoint_path.exists():
-        raise FileNotFoundError(f"Checkpoint not found at {checkpoint_path}")
-
-    checkpointer = ocp.StandardCheckpointer()
-    loaded_params, loaded_state = checkpointer.restore(checkpoint_path)
-
-    if save_full_model:
-        # Full-model checkpoint: deep-merge params/state into model
-        def deep_merge_params(model_params, checkpoint_params):
-            import copy
-
-            merged = copy.deepcopy(model_params)
-            if isinstance(checkpoint_params, dict) and isinstance(model_params, dict):
-                for key, checkpoint_value in checkpoint_params.items():
-                    if key in model_params:
-                        if isinstance(model_params[key], dict) and isinstance(
-                            checkpoint_value, dict
-                        ):
-                            merged[key] = deep_merge_params(
-                                model_params[key], checkpoint_value
-                            )
-                        else:
-                            merged[key] = checkpoint_value
-                    else:
-                        merged[key] = checkpoint_value
-            else:
-                merged = checkpoint_params
-            return merged
-
-        model._params = deep_merge_params(model._params, loaded_params)  # type: ignore[attr-defined]
-        model._state = deep_merge_params(model._state, loaded_state)  # type: ignore[attr-defined]
-    else:
-        # Heads-only checkpoint: merge head params into base model
-        def merge_head_params(model_params, loaded_head_params):
-            import copy
-
-            merged = copy.deepcopy(model_params)
-
-            if isinstance(loaded_head_params, dict):
-                head_keys = {
-                    k: v
-                    for k, v in loaded_head_params.items()
-                    if isinstance(k, str) and k.startswith("head/")
-                }
-                if head_keys:
-                    for key, value in head_keys.items():
-                        merged[key] = value
-
-            if isinstance(loaded_head_params, dict) and "alphagenome/head" in loaded_head_params:
-                if "alphagenome/head" not in merged:
-                    merged["alphagenome/head"] = {}
-                for head_name, head_params in loaded_head_params["alphagenome/head"].items():
-                    merged["alphagenome/head"][head_name] = head_params
-
-            if isinstance(loaded_head_params, dict) and "alphagenome" in loaded_head_params:
-                if isinstance(loaded_head_params["alphagenome"], dict):
-                    if "head" in loaded_head_params["alphagenome"]:
-                        if "alphagenome" not in merged or not isinstance(
-                            merged.get("alphagenome"), dict
-                        ):
-                            merged["alphagenome"] = {}
-                        if "head" not in merged["alphagenome"]:
-                            merged["alphagenome"]["head"] = {}
-                        for head_name, head_params in loaded_head_params["alphagenome"]["head"].items():
-                            merged["alphagenome"]["head"][head_name] = head_params
-
-            return merged
-
-        model._params = merge_head_params(model._params, loaded_params)  # type: ignore[attr-defined]
-        model._state = merge_head_params(model._state, loaded_state)  # type: ignore[attr-defined]
-
-    # Ensure parameters/state on correct device
-    device = model._device_context._device  # type: ignore[attr-defined]
-    model._params = jax.device_put(model._params, device)  # type: ignore[attr-defined]
-    model._state = jax.device_put(model._state, device)  # type: ignore[attr-defined]
 
     return model
 

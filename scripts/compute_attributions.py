@@ -30,7 +30,7 @@ USAGE:
     python scripts/compute_attributions.py \
         --checkpoint_dir ./results/models/checkpoints/HepG2/mpra-HepG2-optimal/stage2 \
         --cell_type HepG2 \
-        --top_n 10 \
+        --top_n 20 \
         --motif CAAAG \
         --shuffle_background \
         --attribution_method deepshap
@@ -64,6 +64,7 @@ USAGE:
 """
 
 import argparse
+import json
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -456,8 +457,239 @@ def sample_random_sequences(dataset, n=10, random_state=None):
     return sampled
 
 
-def compute_attributions(model, sequence, organism_index, method='deepshap', head_name='mpra_head', **kwargs):
-    """Compute attributions using the specified method."""
+def _forward_head_output(
+    model,
+    sequence,
+    organism_index,
+    *,
+    head_name: str,
+    output_index: int | None = None,
+):
+    """
+    Forward pass helper to get the scalar/model output used for ISM.
+    
+    This mirrors the logic used inside CustomAlphaGenomeModel.compute_input_gradients
+    to extract the output for a given custom head and (optionally) output_index,
+    but WITHOUT any summation over positions. It returns the raw head output
+    (after selecting output_index or averaging tracks when output_index is None).
+    """
+    import jax
+    import jax.numpy as jnp
+
+    # Ensure JAX arrays and batch dimension
+    sequence = jnp.array(sequence)
+    if sequence.ndim == 2:
+        sequence = sequence[None, :, :]
+    organism_index = jnp.array(organism_index)
+    if organism_index.ndim == 0:
+        organism_index = organism_index[None]
+
+    # Use the same forward path branches as in compute_input_gradients,
+    # but stop before any scalar reduction.
+    if hasattr(model, "_custom_forward_fn") and model._custom_forward_fn is not None:
+        rng_key = jax.random.PRNGKey(0)
+        result = model._custom_forward_fn(
+            model._params,
+            model._state,
+            rng_key,
+            sequence,
+            organism_index,
+        )
+        if isinstance(result, tuple):
+            predictions_dict, _ = result
+        else:
+            predictions_dict = result
+
+        if isinstance(predictions_dict, dict):
+            output = predictions_dict.get(head_name)
+            available_keys = list(predictions_dict.keys())
+        else:
+            output = None
+            available_keys = f"Type: {type(predictions_dict)}"
+    else:
+        # Fall back to low-level _predict used in gradient code
+        # Use trivial strand arguments (sufficient for MPRA/DeepSTARR FT setups).
+        negative_strand_mask = jnp.zeros((sequence.shape[0],), dtype=jnp.bool_)
+        strand_reindexing = jnp.array([], dtype=jnp.int32)
+
+        predictions = model._predict(
+            model._params,
+            model._state,
+            sequence,
+            organism_index,
+            negative_strand_mask=negative_strand_mask,
+            strand_reindexing=strand_reindexing,
+        )
+
+        # Extract output for the specified head
+        from alphagenome_research.model import model as model_lib  # type: ignore
+
+        _PredictionsDict = getattr(model_lib, "_PredictionsDict", None)
+        if _PredictionsDict is not None and isinstance(predictions, _PredictionsDict):
+            output = predictions._custom.get(head_name)
+            available_keys = list(predictions.keys())
+        elif hasattr(predictions, "get"):
+            output = predictions.get(head_name)
+            available_keys = (
+                list(predictions.keys())
+                if isinstance(predictions, dict)
+                else f"Type: {type(predictions)}"
+            )
+        else:
+            # Try direct access
+            try:
+                output = predictions[head_name]
+                available_keys = list(predictions.keys())
+            except Exception:
+                output = None
+                available_keys = (
+                    list(predictions.keys())
+                    if isinstance(predictions, dict)
+                    else f"Type: {type(predictions)}"
+                )
+
+    if output is None:
+        raise ValueError(
+            f"Output for head '{head_name}' not found in predictions. "
+            f"Available keys: {available_keys}"
+        )
+
+    # Handle multi-track outputs
+    if output_index is not None:
+        # Select specific output track
+        if output.ndim > 1:
+            output = output[..., output_index]
+        else:
+            raise ValueError(
+                f"output_index specified but output is 1D. "
+                f"Output shape: {output.shape}"
+            )
+    else:
+        # Use mean of all tracks if multi-dimensional (e.g. multi-task heads)
+        if output.ndim > 1:
+            output = jnp.mean(output, axis=-1)
+
+    return output
+
+
+def compute_ism_attributions(
+    model,
+    sequence,
+    organism_index,
+    *,
+    head_name: str = "mpra_head",
+    output_index: int | None = None,
+) -> jnp.ndarray:
+    """
+    Compute ISM (in silico mutagenesis) attributions for a single sequence,
+    returning **wildtype-base importance** rather than per-alternative effects.
+
+    Implementation details:
+    - First, for each position and each base (A/T/C/G), we mutate that base,
+      recompute the model output, and store Δ = f(mut) - f(ref).
+    - Then, for each position we identify the wildtype base from the original
+      one-hot sequence and collapse all alternative-base effects into a single
+      score on the wildtype base:
+          WT_importance = -mean_{alt != ref} Δ_alt
+      and set all non-wildtype channels to 0.
+
+    Intuition:
+    - If most alternative mutations are deleterious (Δ_alt < 0), the
+      wildtype importance becomes positive, highlighting bases where the
+      reference allele is crucial for maintaining the prediction.
+    - This yields an attribution map of shape (1, seq_len, 4) where only the
+      wildtype base at each position can be non-zero, directly analogous to
+      gradient×input logos that are masked to the input sequence.
+    """
+    import jax.numpy as jnp
+    import numpy as np
+
+    # Ensure batch dimension
+    sequence = jnp.array(sequence)
+    if sequence.ndim == 2:
+        sequence = sequence[None, :, :]
+    organism_index = jnp.array(organism_index)
+    if organism_index.ndim == 0:
+        organism_index = organism_index[None]
+
+    if sequence.shape[0] != 1:
+        raise ValueError(
+            f"ISM currently supports batch size 1. Got batch size={sequence.shape[0]}"
+        )
+
+    batch, seq_len, num_bases = sequence.shape
+    if num_bases != 4:
+        raise ValueError(
+            f"Expected 4 channels for DNA one-hot, got {num_bases}. "
+            "ISM implementation assumes A/T/C/G channels."
+        )
+
+    # Base prediction for the original sequence
+    base_output = _forward_head_output(
+        model,
+        sequence,
+        organism_index,
+        head_name=head_name,
+        output_index=output_index,
+    )
+    # Reduce to scalar for attribution (handles 0D or 1D outputs)
+    base_scalar = jnp.mean(base_output)
+
+    seq_np = np.asarray(sequence[0])  # (seq_len, 4)
+    # First store full hypothetical ISM matrix (all alt effects)
+    ism_full = np.zeros_like(seq_np, dtype=np.float32)
+
+    # For each position and each base, compute delta prediction
+    for pos in range(seq_len):
+        for b_idx in range(num_bases):
+            mut_seq = np.array(seq_np, copy=True)
+            # Set one-hot at this position to the mutated base
+            mut_seq[pos, :] = 0.0
+            mut_seq[pos, b_idx] = 1.0
+
+            mut_seq_jax = jnp.asarray(mut_seq)[None, :, :]
+            mut_output = _forward_head_output(
+                model,
+                mut_seq_jax,
+                organism_index,
+                head_name=head_name,
+                output_index=output_index,
+            )
+            mut_scalar = jnp.mean(mut_output)
+
+            # Δ = mutated_prediction - reference_prediction
+            ism_full[pos, b_idx] = float(mut_scalar - base_scalar)
+
+    # Collapse alternative SNP effects back onto the wildtype base:
+    # For each position, compute WT_importance = -mean_{alt != ref} Δ_alt,
+    # then assign that value to the wildtype channel and zero out others.
+    ism_wt = np.zeros_like(ism_full, dtype=np.float32)
+    wt_indices = np.argmax(seq_np, axis=-1)  # (seq_len,)
+
+    for pos in range(seq_len):
+        wt_idx = wt_indices[pos]
+        # Collect alternative deltas (exclude WT channel)
+        alt_mask = np.ones(num_bases, dtype=bool)
+        alt_mask[wt_idx] = False
+        alt_deltas = ism_full[pos, alt_mask]
+        if alt_deltas.size > 0:
+            wt_importance = -float(np.mean(alt_deltas))
+        else:
+            wt_importance = 0.0
+        ism_wt[pos, wt_idx] = wt_importance
+
+    # Return wildtype-only attributions with batch dimension
+    return jnp.asarray(ism_wt)[None, :, :]
+
+
+def compute_attributions(model, sequence, organism_index, method='deepshap', head_name='mpra_head', 
+                         apply_mean_correction=True, **kwargs):
+    """Compute attributions using the specified method.
+    
+    Args:
+        apply_mean_correction: If True, apply mean correction (subtract mean across bases at each position).
+            Set to False when you want raw attributions before averaging across shuffles/sequences.
+    """
     if method == 'deepshap':
         attributions = model.compute_deepshap_attributions(
             sequence=sequence,
@@ -471,7 +703,8 @@ def compute_attributions(model, sequence, organism_index, method='deepshap', hea
         # Center DeepSHAP attributions by subtracting the mean across bases at each position.
         # This is a visualization choice that helps when inspecting relative contributions
         # across bases at a position, making it easier to see which bases are preferred.
-        attributions = attributions - jnp.mean(attributions, axis=-1, keepdims=True)
+        if apply_mean_correction:
+            attributions = attributions - jnp.mean(attributions, axis=-1, keepdims=True)
     elif method == 'gradient':
         attributions = model.compute_input_gradients(
             sequence=sequence,
@@ -492,9 +725,20 @@ def compute_attributions(model, sequence, organism_index, method='deepshap', hea
         # mean across bases at each position. This is a visualization choice
         # (not required by the method itself) and can help when inspecting
         # relative contributions across bases at a position.
-        attributions = attributions - jnp.mean(attributions, axis=-1, keepdims=True)
+        if apply_mean_correction:
+            attributions = attributions - jnp.mean(attributions, axis=-1, keepdims=True)
+    elif method == 'ism':
+        # ISM does not use gradient-based mean correction by default; we return
+        # raw delta scores for each (position, base).
+        attributions = compute_ism_attributions(
+            model,
+            sequence,
+            organism_index,
+            head_name=head_name,
+            output_index=kwargs.get('output_index', None),
+        )
     else:
-        raise ValueError(f"Unknown attribution method: {method}. Must be one of: deepshap, gradient, gradient_x_input")
+        raise ValueError(f"Unknown attribution method: {method}. Must be one of: deepshap, gradient, gradient_x_input, ism")
     
     return attributions
 
@@ -679,20 +923,32 @@ def generate_plots(model, sequence, attributions, sequence_str, output_dir, meth
                 logo_type='weight',   # Use raw scores (no normalization)
                 mask_to_sequence=False,  # Show all four bases at each position
                 use_absolute=False,      # Preserve signed DeepSHAP attributions
+                title='Sequence Logo: DeepSHAP Attributions',
             )
         elif method == 'gradient_x_input':
-            # For gradient×input with mean correction, show all bases at each position
-            # so we can see relative preferences (which bases are preferred/dispreferred
-            # relative to the mean at each position). Mean correction is applied before
-            # visualization, so values are centered around zero per position.
+            # For gradient×input, mask to the input sequence to show only the present base
+            # at each position. This is the standard visualization for gradient×input.
             save_path = output_dir / 'sequence_logo_gradient_x_input.png'
             model.plot_sequence_logo(
                 sequence=sequence,
                 gradients=attributions,
                 save_path=str(save_path),
                 logo_type='weight',      # Raw mean-corrected values
-                mask_to_sequence=False,  # Show all bases to see relative preferences
-                use_absolute=False       # Preserve signed values (positive = preferred, negative = dispreferred)
+                mask_to_sequence=True,   # Show only the input base at each position
+                use_absolute=False,      # Preserve signed values (positive = preferred, negative = dispreferred)
+                title='Sequence Logo: Gradient × Input Attributions',
+            )
+        elif method == 'ism':
+            # ISM produces hypothetical attributions for all four bases; show all bases.
+            save_path = output_dir / 'sequence_logo_ism.png'
+            model.plot_sequence_logo(
+                sequence=sequence,
+                gradients=attributions,
+                save_path=str(save_path),
+                logo_type='weight',      # Raw delta scores
+                mask_to_sequence=False,  # Show all four bases at each position
+                use_absolute=False,      # Preserve signed values
+                title='Sequence Logo: ISM Attributions',
             )
         else:  # gradient
             save_path = output_dir / f'sequence_logo_{method}_information.png'
@@ -714,7 +970,7 @@ def generate_plots(model, sequence, attributions, sequence_str, output_dir, meth
 
 def process_sequence(model, dataset, sequence_idx, output_base_dir, method='deepshap', head_name='mpra_head', 
                      motif=None, motif_position=None, motif_center=False, shuffle_background=False, 
-                     return_attributions=False, promoter_seq=None, rand_barcode=None, **kwargs):
+                     n_shuffles=20, return_attributions=False, promoter_seq=None, rand_barcode=None, **kwargs):
     """Process a single sequence: compute attributions and generate plots.
     
     Args:
@@ -803,28 +1059,97 @@ def process_sequence(model, dataset, sequence_idx, output_base_dir, method='deep
             # No promoter info available, treat entire sequence as test sequence
             pass
         
-        # Shuffle only the test sequence part (not promoter/barcode)
-        if shuffle_background:
+        # Handle multiple shuffles if shuffle_background is True
+        if shuffle_background and motif:
+            # Shuffle background multiple times and average attributions
+            print(f"  Shuffling background {n_shuffles} times and averaging attributions...")
+            all_shuffle_attributions = []
+            all_shuffle_sequences = []
+            all_motif_positions = []
+            
+            base_random_state = kwargs.get('random_state', 42)
+            
+            for shuffle_idx in range(n_shuffles):
+                # Use different random state for each shuffle
+                shuffle_random_state = base_random_state + shuffle_idx if base_random_state is not None else None
+                
+                # Shuffle the test sequence part (not promoter/barcode)
+                shuffled_test_seq = dinucleotide_shuffle(test_seq_str, random_state=shuffle_random_state)
+                
+                # Insert motif into shuffled test sequence
+                try:
+                    shuffled_test_seq_with_motif, shuffle_motif_pos = insert_motif(
+                        shuffled_test_seq, motif, position=motif_position, center=motif_center, 
+                        random_state=shuffle_random_state
+                    )
+                    
+                    # Reconstruct full sequence
+                    shuffle_sequence_str = shuffled_test_seq_with_motif + promoter_str + suffix_str
+                    shuffle_sequence = one_hot_encode(shuffle_sequence_str)
+                    
+                    # Compute attributions for this shuffle (without mean correction for now)
+                    # We'll apply mean correction after averaging across shuffles
+                    shuffle_attributions_raw = compute_attributions(
+                        model, shuffle_sequence, organism_index, method=method, head_name=head_name, 
+                        apply_mean_correction=False, **kwargs
+                    )
+                    
+                    all_shuffle_attributions.append(shuffle_attributions_raw)
+                    all_shuffle_sequences.append(shuffle_sequence_str)
+                    all_motif_positions.append(shuffle_motif_pos)
+                    
+                except Exception as e:
+                    print(f"    ✗ Error in shuffle {shuffle_idx+1}/{n_shuffles}: {e}")
+                    continue
+            
+            if not all_shuffle_attributions:
+                print(f"  ✗ No successful shuffles, cannot compute averaged attributions")
+                if return_attributions:
+                    return None, None, None
+                return []
+            
+            # Average attributions across all shuffles (raw, before mean correction)
+            stacked_attributions = jnp.stack(all_shuffle_attributions)  # (n_shuffles, batch, seq_len, 4)
+            attributions_raw = jnp.mean(stacked_attributions, axis=0)  # (batch, seq_len, 4)
+            
+            # Apply mean correction AFTER averaging across shuffles
+            if method == 'deepshap' or method == 'gradient_x_input':
+                attributions = attributions_raw - jnp.mean(attributions_raw, axis=-1, keepdims=True)
+            else:
+                attributions = attributions_raw
+            
+            # Use first shuffle's sequence and motif position for display
+            sequence_str = all_shuffle_sequences[0]
+            motif_insertion_pos = all_motif_positions[0]
+            sequence = one_hot_encode(sequence_str)
+            
+            print(f"  ✓ Averaged attributions over {len(all_shuffle_attributions)} shuffles")
+            
+        elif shuffle_background:
+            # Single shuffle (no motif case - shouldn't happen but handle gracefully)
             test_seq_str = dinucleotide_shuffle(test_seq_str, random_state=kwargs.get('random_state'))
             print(f"  ✓ Test sequence shuffled (dinucleotide-preserving, promoter/barcode preserved)")
-        
-        # Insert motif into test sequence
-        try:
-            test_seq_str, motif_insertion_pos = insert_motif(
-                test_seq_str, motif, position=motif_position, center=motif_center, random_state=kwargs.get('random_state')
-            )
-            print(f"  ✓ Motif inserted at position {motif_insertion_pos} in test sequence")
-            
-            # Reconstruct full sequence: test_seq + promoter + suffix (which includes barcode if present)
             sequence_str = test_seq_str + promoter_str + suffix_str
-            
-            # Re-encode sequence with motif
             sequence = one_hot_encode(sequence_str)
-        except Exception as e:
-            print(f"  ✗ Error inserting motif: {e}")
-            if return_attributions:
-                return None, None, None
-            return []
+        
+        # Insert motif into test sequence (if not already done in shuffle loop)
+        if motif and not (shuffle_background and motif):
+            try:
+                test_seq_str, motif_insertion_pos = insert_motif(
+                    test_seq_str, motif, position=motif_position, center=motif_center, random_state=kwargs.get('random_state')
+                )
+                print(f"  ✓ Motif inserted at position {motif_insertion_pos} in test sequence")
+                
+                # Reconstruct full sequence: test_seq + promoter + suffix (which includes barcode if present)
+                sequence_str = test_seq_str + promoter_str + suffix_str
+                
+                # Re-encode sequence with motif
+                sequence = one_hot_encode(sequence_str)
+            except Exception as e:
+                print(f"  ✗ Error inserting motif: {e}")
+                if return_attributions:
+                    return None, None, None
+                return []
     
     print(f"  Sequence length: {len(sequence_str)}bp")
     print(f"  Sequence (first 50bp): {sequence_str[:50]}...")
@@ -850,26 +1175,67 @@ def process_sequence(model, dataset, sequence_idx, output_base_dir, method='deep
     else:
         output_dir = None
     
-    # Compute attributions
-    print(f"\n  Computing {method} attributions...")
-    try:
-        attributions = compute_attributions(
-            model, sequence, organism_index, method=method, head_name=head_name, **kwargs
-        )
-        print(f"  ✓ Attributions computed: shape {attributions.shape}")
+    # Compute attributions (if not already computed in shuffle loop)
+    if not (shuffle_background and motif):
+        print(f"\n  Computing {method} attributions...")
+        try:
+            # Get raw attributions first (before mean correction)
+            attributions_raw = compute_attributions(
+                model, sequence, organism_index, method=method, head_name=head_name, 
+                apply_mean_correction=False, **kwargs
+            )
+            # Apply mean correction if needed
+            if method == 'deepshap' or method == 'gradient_x_input':
+                attributions = attributions_raw - jnp.mean(attributions_raw, axis=-1, keepdims=True)
+            else:
+                attributions = attributions_raw
+            
+            print(f"  ✓ Attributions computed: shape {attributions.shape}")
+            print(f"    Stats: min={jnp.min(attributions):.6f}, max={jnp.max(attributions):.6f}, mean={jnp.mean(attributions):.6f}")
+            
+            # If motif was inserted, highlight motif region in attributions
+            if motif and motif_insertion_pos is not None:
+                motif_attributions_corrected = attributions[0, motif_insertion_pos:motif_insertion_pos+len(motif), :]
+                motif_attributions_raw = attributions_raw[0, motif_insertion_pos:motif_insertion_pos+len(motif), :]
+                
+                # Sum of corrected (will be ~0 due to mean correction)
+                motif_attrib_sum_corrected = jnp.sum(motif_attributions_corrected)
+                # Sum of raw (actual signal)
+                motif_attrib_sum_raw = jnp.sum(motif_attributions_raw)
+                # Sum of absolute values (magnitude)
+                motif_attrib_sum_abs = jnp.sum(jnp.abs(motif_attributions_corrected))
+                
+                print(f"    Motif region (raw, before mean correction): sum={motif_attrib_sum_raw:.6f}")
+                print(f"    Motif region (corrected, after mean correction): sum={motif_attrib_sum_corrected:.6f} (expected ~0)")
+                print(f"    Motif region (corrected, absolute): sum={motif_attrib_sum_abs:.6f}")
+        except Exception as e:
+            print(f"  ✗ Error computing attributions: {e}")
+            traceback.print_exc()
+            if return_attributions:
+                return None, None, None
+            return []
+    else:
+        # Attributions already computed and averaged in shuffle loop
+        print(f"\n  ✓ Attributions (averaged over {n_shuffles} shuffles): shape {attributions.shape}")
         print(f"    Stats: min={jnp.min(attributions):.6f}, max={jnp.max(attributions):.6f}, mean={jnp.mean(attributions):.6f}")
         
         # If motif was inserted, highlight motif region in attributions
+        # Use raw attributions (before mean correction) for motif region sum, since mean correction
+        # makes sum across bases = 0 by definition
         if motif and motif_insertion_pos is not None:
-            motif_attributions = attributions[0, motif_insertion_pos:motif_insertion_pos+len(motif), :]
-            motif_attrib_sum = jnp.sum(motif_attributions)
-            print(f"    Motif region attribution sum: {motif_attrib_sum:.6f}")
-    except Exception as e:
-        print(f"  ✗ Error computing attributions: {e}")
-        traceback.print_exc()
-        if return_attributions:
-            return None, None, None
-        return []
+            motif_attributions_corrected = attributions[0, motif_insertion_pos:motif_insertion_pos+len(motif), :]
+            motif_attributions_raw = attributions_raw[0, motif_insertion_pos:motif_insertion_pos+len(motif), :]
+            
+            # Sum of corrected (will be ~0 due to mean correction)
+            motif_attrib_sum_corrected = jnp.sum(motif_attributions_corrected)
+            # Sum of raw (actual signal)
+            motif_attrib_sum_raw = jnp.sum(motif_attributions_raw)
+            # Sum of absolute values (magnitude)
+            motif_attrib_sum_abs = jnp.sum(jnp.abs(motif_attributions_corrected))
+            
+            print(f"    Motif region (raw, before mean correction): sum={motif_attrib_sum_raw:.6f}")
+            print(f"    Motif region (corrected, after mean correction): sum={motif_attrib_sum_corrected:.6f} (expected ~0)")
+            print(f"    Motif region (corrected, absolute): sum={motif_attrib_sum_abs:.6f}")
     
     # Return attributions if requested (for averaging)
     if return_attributions:
@@ -1050,6 +1416,12 @@ def main():
         action='store_true',
         help='If set, shuffle sequence background (dinucleotide-preserving) before inserting motif'
     )
+    parser.add_argument(
+        '--n_shuffles',
+        type=int,
+        default=20,
+        help='Number of background shuffles to average over when shuffle_background=True (default: 20)'
+    )
     
     args = parser.parse_args()
     
@@ -1133,6 +1505,25 @@ def main():
     else:
         device = jax.devices('cpu')[0]
     
+    # Load checkpoint config to get head metadata
+    checkpoint_dir = Path(args.checkpoint_dir).resolve()
+    head_metadata = {
+        'center_bp': 256,
+        'pooling_type': 'sum',
+    }
+    config_path = checkpoint_dir / 'config.json'
+    if config_path.exists():
+        try:
+            with open(config_path, 'r') as f:
+                cfg = json.load(f)
+            head_cfg = (cfg.get('head_configs', {})
+                           .get('mpra_head', {})
+                           .get('metadata', {}))
+            head_metadata.update(head_cfg)
+            print(f"Loaded head metadata from checkpoint: {head_metadata}")
+        except Exception as e:
+            print(f"Warning: Could not load checkpoint config: {e}")
+    
     # Register custom head (required before loading checkpoint)
     print("\n" + "="*80)
     print("Registering custom head...")
@@ -1145,23 +1536,29 @@ def main():
             name='mpra_head',
             output_type=dna_output.OutputType.RNA_SEQ,
             num_tracks=1,
-            metadata={}
+            metadata=head_metadata
         )
     )
     print("✓ Head registered\n")
     
-    # Load trained model
+    # Load trained model using load_checkpoint (now handles minimal models correctly)
     print("="*80)
     print("Loading trained model...")
     print("="*80)
-    checkpoint_dir = Path(args.checkpoint_dir).resolve()
+    
+    # Match the training-time model creation: encoder-output head on short MPRA
+    # promoter constructs, with the same init_seq_len used in finetune_mpra.py.
+    PROMOTER_CONSTRUCT_LENGTH = 281
+    init_seq_len = PROMOTER_CONSTRUCT_LENGTH
+    
     model = load_checkpoint(
         str(checkpoint_dir),
         base_model_version='all_folds',
         base_checkpoint_path=args.base_checkpoint_path,
-        device=device
+        device=device,
+        init_seq_len=init_seq_len,
     )
-    print("✓ Model loaded")
+    print("✓ Model loaded successfully")
     print(f"  Custom heads: {model._custom_heads}")
     print()
     
@@ -1245,6 +1642,8 @@ def main():
         
         if args.shuffle_background:
             print(f"Background: Dinucleotide-shuffled (preserves dinucleotide frequencies)")
+            print(f"  Number of shuffles per sequence: {args.n_shuffles}")
+            print(f"  Attributions will be averaged over {args.n_shuffles} shuffles per sequence")
         else:
             print(f"Background: Original test sequences")
         print()
@@ -1275,6 +1674,7 @@ def main():
                 motif_position=args.motif_position,
                 motif_center=use_center_position,
                 shuffle_background=args.shuffle_background,
+                n_shuffles=args.n_shuffles,
                 promoter_seq=promoter_seq,
                 rand_barcode=rand_barcode,
                 n_references=args.n_references,
@@ -1310,6 +1710,7 @@ def main():
                 motif_position=args.motif_position,
                 motif_center=use_center_position,
                 shuffle_background=args.shuffle_background,
+                n_shuffles=args.n_shuffles,
                 promoter_seq=promoter_seq,
                 rand_barcode=rand_barcode,
                 n_references=args.n_references,
@@ -1372,10 +1773,13 @@ def main():
             motif_pos = all_motif_positions[0] if all_motif_positions else None
             
             # Highlight motif region in averaged attributions
+            # Note: Since attributions are mean-corrected, sum will be ~0, so also report absolute sum
             if motif_pos is not None:
                 motif_attributions = averaged_attributions[0, motif_pos:motif_pos+len(motif_sequence), :]
                 motif_attrib_sum = jnp.sum(motif_attributions)
-                print(f"  Motif region (pos {motif_pos}-{motif_pos+len(motif_sequence)}) attribution sum: {motif_attrib_sum:.6f}")
+                motif_attrib_sum_abs = jnp.sum(jnp.abs(motif_attributions))
+                print(f"  Motif region (pos {motif_pos}-{motif_pos+len(motif_sequence)}) attribution sum: {motif_attrib_sum:.6f} (corrected, expected ~0)")
+                print(f"  Motif region (pos {motif_pos}-{motif_pos+len(motif_sequence)}) attribution sum (absolute): {motif_attrib_sum_abs:.6f}")
         
         # Create output directory for averaged results
         avg_output_dir = output_base_dir / 'averaged'
