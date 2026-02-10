@@ -666,14 +666,20 @@ def plot_augmentation_comparison(non_aug_dat_long, aug_dat_long, pal, figsize=(1
         ax.set_xlabel('', fontsize=0)
         ax.set_ylabel('Pearson Correlation')
         ax.set_ylim([0.5, 1])
-        if idx == 1:
-            ax.legend(title='', loc='upper right', bbox_to_anchor=(-.05, 1.22), frameon=False)
+        if idx == 0:
+            ax.legend(title='', loc='upper right', bbox_to_anchor=(1.31, 1.19), frameon=False)
         else:
             #remove legend all together
             ax.legend().remove()
+            ax.set_ylabel('', fontsize=0)
         ax.grid(axis='y', alpha=0.3, linestyle='--')
     
-    plt.tight_layout()
+    # Use tight_layout with rect parameter to control subplot area
+    # This prevents the legend from affecting subplot spacing
+    # rect=[left, bottom, right, top] in figure coordinates
+    plt.tight_layout(rect=[0, 0, 0.95, 1], pad=1.0)
+    # Manually set spacing between subplots to reduce gap
+    fig.subplots_adjust(wspace=0.15)
     return fig
 
 
