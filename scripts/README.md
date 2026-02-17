@@ -18,6 +18,7 @@ Executable scripts for training, evaluation, benchmarking, and data processing.
 * **`compute_attributions_starrseq.py`** - Compute attribution maps and sequence logos for STARR-seq sequences using DeepSHAP, gradients, or gradient×input methods. Supports single sequences or top N sequences by activity.
 * **`create_mpra_comparison_table.py`** - Create comparison table of MPRA model performance across models and cell lines.
 * **`plot_cagi5_results.py`** - Generate violin plots comparing models on CAGI5 benchmark.
+* **`plot_benchmark_results.py`** - Generate bar plots comparing models on lentiMPRA and STARR-seq benchmarks.
 * **`fetch_cagi5_references.py`** - Fetch reference sequences for CAGI5 elements from UCSC genome browser.
 * **`cache_embeddings.py`** - Pre-compute and cache MPRA encoder embeddings for faster training.
 * **`cache_deepstarr_embeddings.py`** - Pre-compute and cache DeepSTARR encoder embeddings for faster training.
