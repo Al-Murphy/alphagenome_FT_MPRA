@@ -508,7 +508,7 @@ def plot_by_model_and_cell(dat_long, pal, include_501bp=True, figsize=(20, 6)):
     return fig
 
 
-def plot_augmentation_comparison(non_aug_dat_long, aug_dat_long, pal, figsize=(14, 5)):
+def plot_augmentation_comparison(non_aug_dat_long, aug_dat_long, pal, figsize=(18, 5)):
     """Create plot comparing non-augmented vs augmented models.
     
     Args:
@@ -626,16 +626,18 @@ def plot_augmentation_comparison(non_aug_dat_long, aug_dat_long, pal, figsize=(1
                 ]
                 if len(group_data) > 0:
                     mean_val = group_data['pearson_r'].mean()
-                    # Add text on top of bar with color matching the bar
+                    # Add text on top of bar with color matching the bar,
+                    # rotated 90° to match benchmark bar plots.
                     ax.text(
                         x_pos + offset,
-                        mean_val + 0.02,
+                        mean_val + 0.002,
                         f'{mean_val:.3f}',
                         ha='center',
                         va='bottom',
-                        fontsize=8,
+                        fontsize=10,
                         fontweight='bold',
-                        color=aug_colors[aug_type]
+                        color=aug_colors[aug_type],
+                        rotation=90,
                     )
         
         # Calculate stats for title (AG MPRA fine-tuned, or probing if fine-tuned not available)
@@ -657,21 +659,29 @@ def plot_augmentation_comparison(non_aug_dat_long, aug_dat_long, pal, figsize=(1
             elif '(Probing)' in label:
                 wrapped_labels.append(label.replace('(Probing)', '\n(Probing)'))
             elif '(Fine-tuned)' in label:
-                wrapped_labels.append(label.replace('(Fine-tuned)', '\n(Fine-tuned)'))
+                wrapped_labels.append(label.replace('(Fine-tuned)', '\n(Fine-tuned)'))   
             else:
                 wrapped_labels.append(label)
-        ax.set_xticklabels(wrapped_labels, fontsize=9)
+        ax.set_xticklabels(wrapped_labels, fontsize=12)
         
         ax.set_title('\n'.join(title_parts))
         ax.set_xlabel('', fontsize=0)
         ax.set_ylabel('Pearson Correlation')
         ax.set_ylim([0.5, 1])
         if idx == 0:
-            ax.legend(title='', loc='upper right', bbox_to_anchor=(1.31, 1.19), frameon=False)
+            ax.legend(loc='upper left', bbox_to_anchor=(0, 1.02), frameon=False, fontsize=10, ncol=1)
         else:
             #remove legend all together
             ax.legend().remove()
             ax.set_ylabel('', fontsize=0)
+
+        # Match benchmark style: remove top/right spines, keep left/bottom as black axes, and use y-grid only.
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['left'].set_color('black')
+        ax.spines['bottom'].set_color('black')
+        ax.spines['left'].set_linewidth(1.0)
+        ax.spines['bottom'].set_linewidth(1.0)
         ax.grid(axis='y', alpha=0.3, linestyle='--')
     
     # Use tight_layout with rect parameter to control subplot area
@@ -1037,7 +1047,7 @@ def main():
             # Plot augmentation comparison by model
             print("  Generating augmentation comparison plot (by model)...")
             fig_aug_model = plot_augmentation_comparison(
-                non_aug_dat_long, aug_dat_long, pal, figsize=(14, 5)
+                non_aug_dat_long, aug_dat_long, pal, figsize=(16, 5)
             )
             save_plots(
                 fig_aug_model,

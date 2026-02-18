@@ -176,7 +176,7 @@ def plot_lentimpra_benchmark(dat, pal, figsize=(8, 5)):
                 bar_color = bar.get_facecolor()
                 ax.text(
                     bar.get_x() + bar.get_width() / 2,
-                    height + 0.001,
+                    height + 0.0025,
                     f'{val:.3f}',
                     ha='center',
                     va='bottom',
@@ -189,11 +189,15 @@ def plot_lentimpra_benchmark(dat, pal, figsize=(8, 5)):
     ax.set_xlabel('Cell Type', fontsize=12)
     ax.set_ylabel('Pearson Correlation', fontsize=12)
     ax.set_title('lentiMPRA', fontsize=14)
+    # Remove top and right spines for cleaner look
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
     ax.set_xticks(x_pos)
     ax.set_xticklabels(cell_order)
     ax.set_ylim([0.5, 1])
     ax.grid(axis='y', alpha=0.5, linestyle='--')
-    ax.legend(loc='upper left', frameon=False, fontsize=10, ncol=2)
+    # Slightly raise legend position
+    ax.legend(loc='upper left', bbox_to_anchor=(0, 1.02), frameon=False, fontsize=10, ncol=2)
     
     plt.tight_layout()
     return fig
@@ -270,7 +274,7 @@ def plot_starrseq_benchmark(dat, pal, figsize=(8, 5)):
                 bar_color = bar.get_facecolor()
                 ax.text(
                     bar.get_x() + bar.get_width() / 2,
-                    height + 0.001,
+                    height + 0.0025,
                     f'{val:.3f}',
                     ha='center',
                     va='bottom',
@@ -283,11 +287,14 @@ def plot_starrseq_benchmark(dat, pal, figsize=(8, 5)):
     ax.set_xlabel('Promoter Type', fontsize=12)
     ax.set_ylabel('Pearson Correlation', fontsize=12)
     ax.set_title('STARR-seq', fontsize=14)
+    # Remove top and right spines for cleaner look
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
     ax.set_xticks(x_pos)
     ax.set_xticklabels(promoter_order)
     ax.set_ylim([0.5, 1])
     ax.grid(axis='y', alpha=0.5, linestyle='--')
-    ax.legend(loc='upper left', frameon=False, fontsize=10)
+    ax.legend(loc='upper left', bbox_to_anchor=(0, 1.02), frameon=False, fontsize=10, ncol=1)
     
     plt.tight_layout()
     return fig
