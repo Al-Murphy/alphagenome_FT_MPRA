@@ -18,7 +18,7 @@ dependencies = [
     # AlphaGenome Research (installable via git URL)
     "alphagenome-research @ git+https://github.com/google-deepmind/alphagenome_research.git",
     # AlphaGenome finetuning utilities (public repo)
-    "alphagenome-ft @ git+https://github.com/Al-Murphy/alphagenome_ft.git",
+    "alphagenome-ft @ git+https://github.com/genomicsxai/alphagenome_ft.git",
     "wandb>=0.23.1",
     "bio>=1.8.1",
     "pysam>=0.23.3",
