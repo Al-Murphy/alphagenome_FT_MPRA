@@ -26,12 +26,23 @@ pip install enformer-pytorch
 
 3. Install this project:
 ```bash
-git clone https://github.com/YOUR_USERNAME/alphagenome_FT_MPRA.git
+git clone https://github.com/Al-Murphy/alphagenome_FT_MPRA.git
 cd alphagenome_FT_MPRA
 pip install -e .
 ```
 
 This will automatically install the `alphagenome-ft` package as a dependency (for AlphaGenome models) and other required packages.
+
+## Contents
+
+- **Overview**
+  - [Architecture](#architecture)
+  - [Quick Start](#quick-start)
+- **Code Guides**
+  - [Source utilities (`src/`)](src/README.md)
+  - [Training / evaluation scripts (`scripts/`)](scripts/README.md)
+  - [Config files (`configs/`)](configs/README.md)
+
 
 ## Architecture
 
