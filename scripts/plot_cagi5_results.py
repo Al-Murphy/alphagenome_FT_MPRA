@@ -855,6 +855,159 @@ def plot_augmentation_comparison_by_cell(non_aug_dat_long, aug_dat_long, pal, fi
     return fig
 
 
+def plot_central_mask_comparison(dat_long, pal, figsize=(12, 5)):
+    """Bar plot comparing AG central mask sizes, including MPRA, with augmentation results aggregated.
+    
+    Includes:
+    - AG (384bp) vs AG (501bp) (pretrained)
+    - AG MPRA (Probing) and AG MPRA (Fine-tuned)
+    Aggregates over all shift/revcomp variants and cell types, mirroring the
+    formatting of the augmentation comparison plot.
+    """
+    # Work on a copy
+    dat_long = dat_long.copy()
+
+    # Keep only AlphaGenome family models (AG, AG MPRA ...)
+    ag_mask = dat_long["model"].astype(str).str.startswith("AG")
+    dat_long = dat_long[ag_mask].copy()
+
+    if dat_long.empty:
+        raise ValueError("No AlphaGenome data found for central mask comparison.")
+
+    # Derive base model label (strip augmentation suffix but keep 384bp/501bp and MPRA stage)
+    def get_base_model(model_name):
+        model_str = str(model_name)
+        if "shift" in model_str or "revcomp" in model_str:
+            parts = model_str.split(" (")
+            first_part = parts[0]
+            if len(parts) > 1:
+                second = parts[1]
+                if "501bp" in second:
+                    return f"{first_part} (501bp)"
+                elif "probing" in second.lower():
+                    return f"{first_part} ({second.split(')')[0]})"
+                elif "fine-tuned" in second.lower():
+                    return f"{first_part} ({second.split(')')[0]})"
+            # Fallback for augmented AG without explicit 501bp/probing/fine-tuned
+            return first_part
+
+        # Non-augmented cases
+        if "AG MPRA" in model_str:
+            return model_str
+        if "501bp" in model_str:
+            return "AG (501bp)"
+        if model_str == "AG":
+            return "AG (384bp)"
+        return model_str
+
+    dat_long["base_model"] = dat_long["model"].apply(get_base_model)
+
+    # Standardize AG naming: plain "AG" -> "AG (384bp)" if any remain
+    dat_long.loc[dat_long["base_model"] == "AG", "base_model"] = "AG (384bp)"
+
+    fig, axes = plt.subplots(1, 2, figsize=figsize)
+    snp_types = ["All SNPs", "High Confidence SNPs"]
+
+    base_model_order = ["AG (384bp)", "AG (501bp)", "AG MPRA (Probing)", "AG MPRA (Fine-tuned)"]
+
+    for idx, snp_type in enumerate(snp_types):
+        ax = axes[idx]
+        data_subset = dat_long[dat_long["snp_type"] == snp_type]
+
+        # Filter to only include models that exist in the data
+        available_models = [m for m in base_model_order if m in data_subset["base_model"].values]
+        if not available_models:
+            continue
+
+        # Create bar plot (one bar per model)
+        sns.barplot(
+            data=data_subset,
+            x="base_model",
+            y="pearson_r",
+            ax=ax,
+            order=available_models,
+            palette={
+                "AG (384bp)": pal[5],
+                "AG (501bp)": pal[0],
+                "AG MPRA (Probing)": pal[4],
+                "AG MPRA (Fine-tuned)": pal[3],
+            },
+            alpha=0.8,
+            estimator="mean",
+            errorbar=None,
+        )
+
+        # Get x positions
+        xtick_positions = ax.get_xticks()
+
+        # Add mean values on top of bars, matching augmentation plot style
+        model_colors = {
+            "AG (384bp)": pal[5],
+            "AG (501bp)": pal[0],
+            "AG MPRA (Probing)": pal[4],
+            "AG MPRA (Fine-tuned)": pal[3],
+        }
+        for i, base_model in enumerate(available_models):
+            x_pos = xtick_positions[i]
+            group_data = data_subset[data_subset["base_model"] == base_model]
+            if len(group_data) == 0:
+                continue
+            mean_val = group_data["pearson_r"].mean()
+            ax.text(
+                x_pos,
+                mean_val + 0.002,
+                f"{mean_val:.3f}",
+                ha="center",
+                va="bottom",
+                fontsize=10,
+                fontweight="bold",
+                color=model_colors[base_model],
+                rotation=90,
+            )
+
+        # Calculate stats for title using all AG-family elements
+        n_total = data_subset["n"].sum() if len(data_subset) > 0 else 0
+        n_elements = len(data_subset["element"].unique()) if len(data_subset) > 0 else 0
+        title_parts = [
+            f"{snp_type}",
+            f"N={n_total} SNPs, {n_elements} regulatory elements",
+        ]
+
+        # Wrap x-axis labels to put "(384bp)", "(501bp)", "(Probing)", "(Fine-tuned)" on next line
+        labels = [label.get_text() for label in ax.get_xticklabels()]
+        wrapped_labels = []
+        for label in labels:
+            if "(384bp)" in label:
+                wrapped_labels.append(label.replace("(384bp)", "\n(384bp)"))
+            elif "(501bp)" in label:
+                wrapped_labels.append(label.replace("(501bp)", "\n(501bp)"))
+            elif "(Probing)" in label:
+                wrapped_labels.append(label.replace("(Probing)", "\n(Probing)"))
+            elif "(Fine-tuned)" in label:
+                wrapped_labels.append(label.replace("(Fine-tuned)", "\n(Fine-tuned)"))
+            else:
+                wrapped_labels.append(label)
+        ax.set_xticklabels(wrapped_labels, fontsize=12)
+
+        ax.set_title("\n".join(title_parts))
+        ax.set_xlabel("", fontsize=0)
+        ax.set_ylabel("Pearson Correlation")
+        ax.set_ylim([0.4, 1])
+
+        # Match benchmark/augmentation style: clean spines and y-grid only
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        ax.spines["left"].set_color("black")
+        ax.spines["bottom"].set_color("black")
+        ax.spines["left"].set_linewidth(1.0)
+        ax.spines["bottom"].set_linewidth(1.0)
+        ax.grid(axis="y", alpha=0.3, linestyle="--")
+
+    plt.tight_layout(rect=[0, 0, 0.95, 1], pad=1.0)
+    fig.subplots_adjust(wspace=0.15)
+    return fig
+
+
 def save_plots(fig, output_path, dpi=1200, formats=['pdf', 'png']):
     """Save figure in multiple formats."""
     output_path = Path(output_path)
@@ -1024,6 +1177,27 @@ def main():
             formats=args.formats
         )
         plt.close(fig_cell_501)
+        print()
+
+    # Generate central mask size comparison plot for AlphaGenome family (AG + AG MPRA),
+    # including shift|revcomp results.
+    print("Generating central mask size comparison plot for AlphaGenome (including MPRA and augmentation)...")
+    ag_family_mask = dat["model"].astype(str).str.startswith("AG")
+    dat_ag = dat[ag_family_mask].copy()
+
+    if len(dat_ag) > 0:
+        dat_ag_long = prepare_data(dat_ag)
+        fig_mask = plot_central_mask_comparison(dat_ag_long, pal, figsize=(12, 5))
+        save_plots(
+            fig_mask,
+            output_dir / "cagi5_central_mask_comparison",
+            dpi=args.dpi,
+            formats=args.formats,
+        )
+        plt.close(fig_mask)
+        print()
+    else:
+        print("  Skipping central mask comparison plot: no AlphaGenome data found.")
         print()
     
     # Generate augmentation comparison plots if data is available
