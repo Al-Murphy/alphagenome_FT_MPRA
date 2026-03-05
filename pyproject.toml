@@ -28,5 +28,6 @@ dependencies = [
     "pybigwig>=0.3.25",
 ]
 
-[tool.setuptools]
-packages = ["src"]
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["alphagenome_ft_mpra*"]

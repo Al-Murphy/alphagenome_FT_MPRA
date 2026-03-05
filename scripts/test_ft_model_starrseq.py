@@ -31,7 +31,7 @@ USAGE EXAMPLES:
 5. Use in Python script or notebook:
    from test_ft_model_starrseq import get_predictions, compute_metrics
    from alphagenome_ft import load_checkpoint
-   from src import DeepSTARRDataset, STARRSeqDataLoader
+   from alphagenome_ft_mpra import DeepSTARRDataset, STARRSeqDataLoader
    
    # Load model
    model = load_checkpoint('./results/models/checkpoints/deepstarr/deepstarr-head-encoder')
@@ -65,7 +65,7 @@ from alphagenome_ft import (
     register_custom_head,
     load_checkpoint,
 )
-from src import DeepSTARRHead, DeepSTARRDataset, STARRSeqDataLoader
+from alphagenome_ft_mpra import DeepSTARRHead, DeepSTARRDataset, STARRSeqDataLoader
 
 
 def get_predictions_for_saving(

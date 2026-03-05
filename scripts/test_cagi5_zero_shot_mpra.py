@@ -76,9 +76,9 @@ from alphagenome_ft import (
     register_custom_head,
     load_checkpoint,
 )
-from src import EncoderMPRAHead  # type: ignore
+from alphagenome_ft_mpra import EncoderMPRAHead  # type: ignore
 
-from src.seq_loader import seq_loader  # type: ignore
+from alphagenome_ft_mpra.seq_loader import seq_loader  # type: ignore
 
 
 PROMOTER_CONSTRUCT_LENGTH = 281  # same init_seq_len as finetune_mpra.py

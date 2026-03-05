@@ -39,7 +39,7 @@ This will automatically install the `alphagenome-ft` package as a dependency (fo
   - [Architecture](#architecture)
   - [Quick Start](#quick-start)
 - **Code Guides**
-  - [Source utilities (`src/`)](src/README.md)
+  - [Source utilities (`alphagenome_ft_mpra/`)](alphagenome_ft_mpra/README.md)
   - [Training / evaluation scripts (`scripts/`)](scripts/README.md)
   - [Config files (`configs/`)](configs/README.md)
 
@@ -79,7 +79,7 @@ Custom Task-Specific Heads (trainable)
 2. **Enformer**:
    - Encoder-level embeddings at 128bp resolution
    - PyTorch implementation with custom heads
-   - See `src/enf_utils.py` for Enformer-specific utilities
+   - See `alphagenome_ft_mpra/enf_utils.py` for Enformer-specific utilities
 
 3. **Other Generalist Models**:
    - The modular approach can be extended to any seq2func model
@@ -97,6 +97,27 @@ This approach allows leveraging rich pretrained representations while efficientl
 
 ## Quick Start
 
+### MPRA Oracle API (pretrained checkpoints)
+
+```python
+from alphagenome_ft_mpra import load_oracle
+
+oracle = load_oracle(
+    "/path/to/checkpoint_dir",
+    # Optional construct pieces (set to None to skip)
+    left_adapter=None,
+    right_adapter=None,
+    promoter="TCCATTATATACCCTCTAGTGTCGGTTCACGCAATG",
+    barcode="AGAGACTGAGGCCAC",
+)
+
+# mode="core": add left/right adapters + promoter + barcode (if provided)
+# mode="flanked": add promoter + barcode (if provided)
+# mode="full": no sequence additions
+scores = oracle.predict(["ACGT..."], mode="core")
+print(scores)
+```
+
 ### AlphaGenome Example
 
 ```python
@@ -112,7 +133,7 @@ from alphagenome_ft import (
     wrap_pretrained_model,
     add_custom_heads_to_model,
 )
-from src.mpra_heads import MPRAHead
+from alphagenome_ft_mpra.mpra_heads import MPRAHead
 
 # 1. Register custom MPRA head
 register_custom_head(
@@ -144,7 +165,7 @@ model.freeze_backbone()
 ```python
 import torch
 from enformer_pytorch import from_pretrained
-from src.enf_utils import EncoderMPRAHead
+from alphagenome_ft_mpra.enf_utils import EncoderMPRAHead
 
 # 1. Load pretrained Enformer
 enformer = from_pretrained('EleutherAI/enformer-official-rough', use_tf_gamma=False)
@@ -186,12 +207,13 @@ python scripts/finetune_enformer_starrseq.py --config configs/starrseq.json
 
 ```
 alphagenome_FT_MPRA/
-├── src/                      # Source code
+├── alphagenome_ft_mpra/      # Source code
 │   ├── mpra_heads.py         # Custom prediction heads (MPRAHead, EncoderMPRAHead, DeepSTARRHead)
 │   ├── enf_utils.py          # Enformer-specific utilities and heads
 │   ├── data.py               # Data loading classes (LentiMPRADataset, DeepSTARRDataset)
 │   ├── seq_loader.py         # Sequence loading utilities
-│   ├── training.py            # Training utilities and helpers
+│   ├── training.py           # Training utilities and helpers
+│   ├── oracle.py             # MPRA oracle loading + predict(mode=...)
 │   └── __init__.py
 ├── scripts/                  # Executable training and evaluation scripts
 │   ├── finetune_mpra.py      # Finetune AlphaGenome on LentiMPRA
@@ -245,7 +267,7 @@ alphagenome_FT_MPRA/
 To add support for another generalist seq2func model:
 
 1. **Extract Embeddings**: Implement a function to extract sequence embeddings from your model
-2. **Create Custom Head**: Implement a head class (see `src/mpra_heads.py` for examples)
+2. **Create Custom Head**: Implement a head class (see `alphagenome_ft_mpra/mpra_heads.py` for examples)
 3. **Wrap Model**: Create a wrapper that freezes the backbone and exposes embeddings
 4. **Add Training Script**: Follow the pattern in `scripts/finetune_*.py`
 

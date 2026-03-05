@@ -37,7 +37,7 @@ from typing import Optional
 
 # Import Enformer utilities
 import importlib.util
-enf_utils_path = Path(__file__).parent.parent / 'src' / 'enf_utils.py'
+enf_utils_path = Path(__file__).parent.parent / 'alphagenome_ft_mpra' / 'enf_utils.py'
 spec = importlib.util.spec_from_file_location("enf_utils", enf_utils_path)
 enf_utils = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(enf_utils)
