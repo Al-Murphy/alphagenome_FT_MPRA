@@ -15,7 +15,8 @@ from alphagenome_ft import HeadConfig, HeadType, load_checkpoint, register_custo
 
 from .mpra_heads import EncoderMPRAHead
 
-
+LEFT_ADAPTER = "AGGACCGGATCAACT"
+RIGHT_ADAPTER= "CATTGCGTGAACCGA"
 DEFAULT_PROMOTER = "TCCATTATATACCCTCTAGTGTCGGTTCACGCAATG"
 DEFAULT_BARCODE = "AGAGACTGAGGCCAC"
 
@@ -30,8 +31,8 @@ class MPRAOracle:
         head_name: str = "mpra_head",
         pooling_type: str = "sum",
         center_bp: int = 256,
-        left_adapter: str | None = None,
-        right_adapter: str | None = None,
+        left_adapter: str | None = LEFT_ADAPTER,
+        right_adapter: str | None = RIGHT_ADAPTER,
         promoter: str | None = DEFAULT_PROMOTER,
         barcode: str | None = DEFAULT_BARCODE,
     ):
@@ -206,12 +207,9 @@ def load_oracle(
         load_kwargs["device"] = device
 
     try:
-        model = load_checkpoint(str(checkpoint_dir), init_seq_len=281, **load_kwargs)
+        model = load_checkpoint(str(checkpoint_dir), **load_kwargs)
     except TypeError:
-        try:
-            model = load_checkpoint(str(checkpoint_dir), **load_kwargs)
-        except TypeError:
-            model = load_checkpoint(str(checkpoint_dir))
+        model = load_checkpoint(str(checkpoint_dir))
 
     return MPRAOracle(
         model,
