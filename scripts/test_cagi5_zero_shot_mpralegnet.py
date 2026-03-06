@@ -79,12 +79,12 @@ repo_root = Path(__file__).parent.parent
 sys.path.insert(0, str(repo_root))
 
 # ---------------------------------------------------------------------------
-# Import seq_loader (direct import to avoid JAX dependencies in src/__init__.py)
+# Import seq_loader (direct import to avoid importing full package at module load)
 # ---------------------------------------------------------------------------
 
 import importlib.util
 
-seq_loader_path = repo_root / 'src' / 'seq_loader.py'
+seq_loader_path = repo_root / 'alphagenome_ft_mpra' / 'seq_loader.py'
 spec_seq = importlib.util.spec_from_file_location("seq_loader", seq_loader_path)
 seq_loader_module = importlib.util.module_from_spec(spec_seq)
 spec_seq.loader.exec_module(seq_loader_module)
