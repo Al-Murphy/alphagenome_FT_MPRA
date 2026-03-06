@@ -6,7 +6,7 @@
 
 This repository demonstrates finetuning **generalist seq2func models** (AlphaGenome, Enformer, and others) on MPRA (Massively Parallel Reporter Assay) and STARR-seq data. The modular approach shown here can be applied to **any generalist seq2func model** that provides sequence embeddings, making it a flexible framework for regulatory sequence prediction tasks.
 
-The goal is to think of any pretrained generalist model as **modular components** that can be used separately for their _cis_-regulatory logic. Here we finetuned the generalists' encoders to predict reporter activity from genomic sequences, applying it to lentiMPRA and DeepSTARR datasets and evaluating performance zero-shot on CAGI5 data. 
+The goal is to think of any pretrained generalist model as **modular components** that can be used separately for their _cis_-regulatory logic. Here we finetuned the generalists' encoders to predict reporter activity from genomic sequences, applying it to lentiMPRA and DeepSTARR datasets and evaluating performance zero-shot on CAGI5 data.
 
 This approach leverages the rich sequence representations learned by large-scale generalist models while adapting them to specific regulatory tasks through task-specific prediction heads.
 
@@ -71,7 +71,7 @@ Custom Task-Specific Heads (trainable)
 
 ### Supported Models
 
-1. **AlphaGenome**: 
+1. **AlphaGenome**:
    - Multi-resolution embeddings (1bp, 128bp, pairwise)
    - Uses [`alphagenome-ft`](https://github.com/genomicsxai/alphagenome_ft) for finetuning utilities
    - See that repository for documentation on custom heads, parameter freezing, and model wrapping
@@ -96,27 +96,6 @@ This approach allows leveraging rich pretrained representations while efficientl
 
 
 ## Quick Start
-
-### MPRA Oracle API (pretrained checkpoints)
-
-```python
-from alphagenome_ft_mpra import load_oracle
-
-oracle = load_oracle(
-    "/path/to/checkpoint_dir",
-    # Optional construct pieces (set to None to skip)
-    left_adapter=None,
-    right_adapter=None,
-    promoter="TCCATTATATACCCTCTAGTGTCGGTTCACGCAATG",
-    barcode="AGAGACTGAGGCCAC",
-)
-
-# mode="core": add left/right adapters + promoter + barcode (if provided)
-# mode="flanked": add promoter + barcode (if provided)
-# mode="full": no sequence additions
-scores = oracle.predict(["ACGT..."], mode="core")
-print(scores)
-```
 
 ### AlphaGenome Example
 
@@ -185,6 +164,33 @@ model.freeze_backbone()
 # See scripts/finetune_enformer_mpra.py for complete training example
 ```
 
+### MPRA Oracle API (pretrained checkpoints)
+You can also use the pretrained model as an oracle. Currently, `MPRAOracle` is only supported.
+
+```python
+from alphagenome_ft_mpra import load_oracle
+
+oracle = load_oracle(
+    "/path/to/checkpoint_dir",
+    # Optional construct pieces (set to None to skip)
+    left_adapter=None,
+    right_adapter=None,
+    promoter="TCCATTATATACCCTCTAGTGTCGGTTCACGCAATG",
+    barcode="AGAGACTGAGGCCAC",
+)
+
+# mode="core": add left/right adapters + promoter + barcode (if provided)
+# mode="flanked": add promoter + barcode (if provided)
+# mode="full": no sequence additions
+
+# Usage 1) onehot in shape: (S, 4) or (B, S, 4)
+scores = oracle.predict(onehot, mode="core")
+
+# Usage 2) string convenience wrapper
+scores = oracle.predict_sequences(["ACGT..."], mode="core")
+```
+
+
 ### Using Configuration Files
 
 For both AlphaGenome and Enformer, you can use pre-configured hyperparameters:
@@ -213,7 +219,7 @@ alphagenome_FT_MPRA/
 │   ├── data.py               # Data loading classes (LentiMPRADataset, DeepSTARRDataset)
 │   ├── seq_loader.py         # Sequence loading utilities
 │   ├── training.py           # Training utilities and helpers
-│   ├── oracle.py             # MPRA oracle loading + predict(mode=...)
+│   ├── oracle.py             # MPRA oracle loading + predict(onehot, mode=...) and predict_sequence(...)
 │   └── __init__.py
 ├── scripts/                  # Executable training and evaluation scripts
 │   ├── finetune_mpra.py      # Finetune AlphaGenome on LentiMPRA
