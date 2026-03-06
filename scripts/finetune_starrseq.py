@@ -4,7 +4,7 @@ Finetune AlphaGenome with DeepSTARR head on DeepSTARR dataset from
 
 Compare performance against DeepSTARR (Pearson R Developmental enhancers - 0.656, PCC Housekeeping enhancers - 0.736)
 and Dream-RNN (Pearson R Developmental enhancers - 0.665, PCC Housekeeping enhancers - 0.746)
-DeepSTARR values from downlaoding weights and running test set. 
+DeepSTARR values from downloading weights and running test set. 
 DREAM-RNN values are from [DEGU](https://www.nature.com/articles/s44387-025-00053-3) Supp Fig.2a-b (mean of ensemble)
 
 DeepSTARR predicts two types of enhancer activity:
