@@ -6,6 +6,7 @@ This package provides utility classes and functions for finetuning AlphaGenome m
 
 from .mpra_heads import MPRAHead, EncoderMPRAHead, DeepSTARRHead
 from .data import LentiMPRADataset, MPRADataLoader, DeepSTARRDataset, STARRSeqDataLoader
+from .oracle import MPRAOracle, load_oracle
 from .training import train, validate
 
 __all__ = [
@@ -16,7 +17,8 @@ __all__ = [
     'MPRADataLoader',
     'DeepSTARRDataset',
     'STARRSeqDataLoader',
+    'MPRAOracle',
+    'load_oracle',
     'train',
     'validate',
 ]
-

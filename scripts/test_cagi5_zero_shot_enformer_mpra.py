@@ -39,7 +39,7 @@ from scipy.stats import pearsonr, spearmanr
 
 import torch
 
-# Add parent directory to path to allow imports from src
+# Add parent directory to path to allow local package imports
 parent_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(parent_dir))
 
@@ -64,10 +64,10 @@ PROMOTER_CONSTRUCT_LENGTH = 281
 
 
 # ---------------------------------------------------------------------------
-# Import seq_loader (direct import to avoid JAX dependencies in src/__init__.py)
+# Import seq_loader directly to avoid importing full package at module load
 # ---------------------------------------------------------------------------
 
-seq_loader_path = Path(__file__).parent.parent / 'src' / 'seq_loader.py'
+seq_loader_path = Path(__file__).parent.parent / 'alphagenome_ft_mpra' / 'seq_loader.py'
 spec_seq = importlib.util.spec_from_file_location("seq_loader", seq_loader_path)
 seq_loader_module = importlib.util.module_from_spec(spec_seq)
 spec_seq.loader.exec_module(seq_loader_module)
@@ -884,4 +884,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

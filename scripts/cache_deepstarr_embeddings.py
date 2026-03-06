@@ -20,7 +20,7 @@ from tqdm import tqdm
 
 from alphagenome_ft import create_model_with_custom_heads
 from alphagenome_research.model import dna_model
-from src import DeepSTARRDataset
+from alphagenome_ft_mpra import DeepSTARRDataset
 
 
 def compute_sequence_hash(sequence: str) -> str:

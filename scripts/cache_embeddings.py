@@ -29,7 +29,7 @@ from alphagenome_ft import (
     register_custom_head,
     create_model_with_custom_heads,
 )
-from src import EncoderMPRAHead, LentiMPRADataset
+from alphagenome_ft_mpra import EncoderMPRAHead, LentiMPRADataset
 
 
 def compute_sequence_hash(sequence: str) -> str:

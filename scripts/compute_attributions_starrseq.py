@@ -61,7 +61,7 @@ import random
 from alphagenome_ft import load_checkpoint, register_custom_head, HeadConfig, HeadType
 from alphagenome.models import dna_output
 from alphagenome_research.model import dna_model
-from src import DeepSTARRHead, DeepSTARRDataset, STARRSeqDataLoader
+from alphagenome_ft_mpra import DeepSTARRHead, DeepSTARRDataset, STARRSeqDataLoader
 
 # Import utility functions from the MPRA attribution script
 # Both scripts are in the same directory, so we can import directly

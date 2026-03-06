@@ -28,7 +28,7 @@ USAGE EXAMPLES:
 5. Use in Python script or notebook:
    from test_ft_model_mpra import get_predictions, compute_metrics
    from alphagenome_ft import load_checkpoint
-   from src import LentiMPRADataset, MPRADataLoader
+   from alphagenome_ft_mpra import LentiMPRADataset, MPRADataLoader
    
    # Load model
    model = load_checkpoint('./results/models/checkpoints/mpra_encoder_head')
@@ -62,7 +62,7 @@ from alphagenome_ft import (
     register_custom_head,
     load_checkpoint,
 )
-from src import EncoderMPRAHead, LentiMPRADataset, MPRADataLoader
+from alphagenome_ft_mpra import EncoderMPRAHead, LentiMPRADataset, MPRADataLoader
 
 
 def get_predictions_for_saving(

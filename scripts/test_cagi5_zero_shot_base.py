@@ -58,7 +58,7 @@ from scipy.stats import pearsonr, spearmanr
 from alphagenome.models import dna_output
 from alphagenome_research.model import dna_model
 
-from src.seq_loader import seq_loader  # type: ignore
+from alphagenome_ft_mpra.seq_loader import seq_loader  # type: ignore
 
 
 # ---------------------------------------------------------------------------

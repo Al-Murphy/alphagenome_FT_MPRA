@@ -75,7 +75,7 @@ import random
 
 from alphagenome_ft import load_checkpoint, register_custom_head, HeadConfig, HeadType
 from alphagenome.models import dna_output
-from src import EncoderMPRAHead, LentiMPRADataset
+from alphagenome_ft_mpra import EncoderMPRAHead, LentiMPRADataset
 
 
 
