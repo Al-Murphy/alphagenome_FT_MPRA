@@ -11,7 +11,13 @@ import jax.numpy as jnp
 import numpy as np
 from alphagenome.models import dna_output
 from alphagenome_research.model import dna_model
-from alphagenome_ft import HeadConfig, HeadType, load_checkpoint, register_custom_head
+from alphagenome_ft import (
+    CustomAlphaGenomeModel,
+    HeadConfig,
+    HeadType,
+    load_checkpoint,
+    register_custom_head,
+)
 
 from .mpra_heads import EncoderMPRAHead
 
@@ -26,7 +32,7 @@ class MPRAOracle:
 
     def __init__(
         self,
-        model,
+        model: CustomAlphaGenomeModel,
         *,
         head_name: str = "mpra_head",
         pooling_type: str = "sum",
@@ -36,7 +42,7 @@ class MPRAOracle:
         promoter: str | None = DEFAULT_PROMOTER,
         barcode: str | None = DEFAULT_BARCODE,
     ):
-        self.model = model
+        self.model: CustomAlphaGenomeModel = model
         self.head_name = head_name
         self.pooling_type = pooling_type
         self.center_bp = center_bp
@@ -45,39 +51,113 @@ class MPRAOracle:
         self.promoter = promoter
         self.barcode = barcode
 
-    def _assemble_sequence(self, seq: str, mode: str) -> str:
-        mode = mode.lower()
-        clean_seq = seq.strip().upper()
+    @staticmethod
+    def _validate_mode(mode: str) -> str:
+        norm_mode = mode.lower()
+        if norm_mode not in {"core", "flanked", "full"}:
+            raise ValueError(
+                f"Invalid mode '{mode}'. Must be one of: core, flanked, full"
+            )
+        return norm_mode
+
+    def _encode_sequence(self, seq: str) -> np.ndarray:
+        return np.asarray(
+            self.model._one_hot_encoder.encode(seq.strip().upper()),
+            dtype=np.float32,
+        )
+
+    def _normalize_onehot_inputs(
+        self,
+        onehot: np.ndarray | jnp.ndarray,
+    ) -> list[np.ndarray]:
+        if not isinstance(onehot, (np.ndarray, jnp.ndarray)):
+            raise TypeError(
+                "predict() expects a NumPy or JAX array. "
+                "Use predict_sequence() for strings."
+            )
+
+        arr = np.asarray(onehot, dtype=np.float32)
+        if arr.ndim == 2:
+            if arr.shape[-1] != 4:
+                raise ValueError(f"Expected onehot shape (S, 4); got {arr.shape}.")
+            return [arr]
+        if arr.ndim == 3:
+            if arr.shape[-1] != 4:
+                raise ValueError(f"Expected onehot shape (B, S, 4); got {arr.shape}.")
+            return [arr[i] for i in range(arr.shape[0])]
+        raise ValueError(f"Expected onehot rank 2 or 3 array; got rank {arr.ndim}.")
+
+    def _normalize_sequence_inputs(self, seq: str | Iterable[str]) -> list[str]:
+        if isinstance(seq, str):
+            return [seq.strip().upper()]
+
+        seqs = list(seq)
+        normalized: list[str] = []
+        for i, item in enumerate(seqs):
+            if not isinstance(item, str):
+                raise TypeError(
+                    f"Expected sequence element {i} to be str; got {type(item).__name__}."
+                )
+            normalized.append(item.strip().upper())
+        return normalized
+
+    def _construct_parts_for_mode(self, mode: str) -> tuple[np.ndarray | None, ...]:
+        left = (
+            self._encode_sequence(self.left_adapter)
+            if self.left_adapter is not None
+            else None
+        )
+        right = (
+            self._encode_sequence(self.right_adapter)
+            if self.right_adapter is not None
+            else None
+        )
+        promoter = (
+            self._encode_sequence(self.promoter)
+            if self.promoter is not None
+            else None
+        )
+        barcode = (
+            self._encode_sequence(self.barcode)
+            if self.barcode is not None
+            else None
+        )
 
         if mode == "core":
-            parts = [
-                self.left_adapter,
-                clean_seq,
-                self.right_adapter,
-                self.promoter,
-                self.barcode,
-            ]
-        elif mode == "flanked":
-            parts = [clean_seq, self.promoter, self.barcode]
-        elif mode == "full":
-            parts = [clean_seq]
-        else:
-            raise ValueError(f"Invalid mode '{mode}'. Must be one of: core, flanked, full")
+            return left, right, promoter, barcode
+        if mode == "flanked":
+            return None, None, promoter, barcode
+        return None, None, None, None
 
-        return "".join(part for part in parts if part is not None)
+    def _apply_mode_to_onehot(self, payloads: list[np.ndarray], mode: str) -> list[np.ndarray]:
+        left, right, promoter, barcode = self._construct_parts_for_mode(mode)
+        constructed: list[np.ndarray] = []
+        for payload in payloads:
+            parts: list[np.ndarray] = []
+            if left is not None:
+                parts.append(left)
+            parts.append(payload)
+            if right is not None:
+                parts.append(right)
+            if promoter is not None:
+                parts.append(promoter)
+            if barcode is not None:
+                parts.append(barcode)
+            constructed.append(np.concatenate(parts, axis=0).astype(np.float32, copy=False))
+        return constructed
 
-    def _encode_batch(self, seqs: list[str]) -> jnp.ndarray:
-        encoded = [jnp.array(self.model._one_hot_encoder.encode(s)) for s in seqs]
-        max_len = max(arr.shape[0] for arr in encoded)
+    @staticmethod
+    def _pad_onehot_batch(onehot: list[np.ndarray]) -> jnp.ndarray:
+        max_len = max(arr.shape[0] for arr in onehot)
+        padded: list[np.ndarray] = []
 
-        padded = []
-        for arr in encoded:
+        for arr in onehot:
             if arr.shape[0] < max_len:
-                pad = jnp.zeros((max_len - arr.shape[0], 4), dtype=arr.dtype)
-                arr = jnp.concatenate([arr, pad], axis=0)
-            padded.append(arr)
+                pad = np.zeros((max_len - arr.shape[0], 4), dtype=np.float32)
+                arr = np.concatenate([arr, pad], axis=0)
+            padded.append(arr.astype(np.float32, copy=False))
 
-        return jnp.stack(padded, axis=0)
+        return jnp.asarray(np.stack(padded, axis=0), dtype=jnp.float32)
 
     def _pool_predictions(self, head_predictions: np.ndarray) -> np.ndarray:
         seq_len = head_predictions.shape[1]
@@ -106,9 +186,9 @@ class MPRAOracle:
 
         return np.asarray(pooled)
 
-    def _predict_batch(self, seqs: list[str]) -> np.ndarray:
-        batch_seq = self._encode_batch(seqs)
-        batch_org = jnp.zeros((len(seqs),), dtype=jnp.int32)
+    def _predict_onehot_batch(self, onehot_batch: list[np.ndarray]) -> np.ndarray:
+        batch_seq = self._pad_onehot_batch(onehot_batch)
+        batch_org = jnp.zeros((batch_seq.shape[0],), dtype=jnp.int32)
 
         with self.model._device_context:
             predictions = self.model._predict(
@@ -116,7 +196,7 @@ class MPRAOracle:
                 self.model._state,
                 batch_seq,
                 batch_org,
-                negative_strand_mask=jnp.zeros(len(seqs), dtype=bool),
+                negative_strand_mask=jnp.zeros(batch_seq.shape[0], dtype=bool),
                 strand_reindexing=jax.device_put(
                     self.model._metadata[dna_model.Organism.HOMO_SAPIENS].strand_reindexing,
                     self.model._device_context._device,
@@ -126,36 +206,68 @@ class MPRAOracle:
         head_predictions = np.array(predictions[self.head_name])
         return self._pool_predictions(head_predictions)
 
-    def predict(
+    def _predict_payloads(
         self,
-        seq: str | Iterable[str],
+        payloads: list[np.ndarray],
         *,
-        mode: str = "core",
-        batch_size: int = 64,
+        mode: str,
+        batch_size: int,
     ) -> np.ndarray:
-        """Predict MPRA activity.
-
-        Args:
-            seq: Single sequence or iterable of sequences.
-            mode: Sequence format mode: "core", "flanked", or "full".
-            batch_size: Number of sequences per inference batch.
-        """
-        if isinstance(seq, str):
-            seqs = [seq]
-        else:
-            seqs = list(seq)
-
-        if not seqs:
+        if batch_size <= 0:
+            raise ValueError(f"batch_size must be > 0; got {batch_size}.")
+        if not payloads:
             return np.array([])
 
-        assembled = [self._assemble_sequence(s, mode=mode) for s in seqs]
+        norm_mode = self._validate_mode(mode)
+        assembled = self._apply_mode_to_onehot(payloads, norm_mode)
 
         all_preds = []
         for i in range(0, len(assembled), batch_size):
             batch = assembled[i : i + batch_size]
-            all_preds.append(self._predict_batch(batch))
-
+            all_preds.append(self._predict_onehot_batch(batch))
         return np.concatenate(all_preds, axis=0)
+
+    def predict(
+        self,
+        onehot: np.ndarray | jnp.ndarray,
+        *,
+        mode: str = "core",
+        batch_size: int = 64,
+    ) -> np.ndarray:
+        """Predict MPRA activity from one-hot encoded sequences.
+
+        Args:
+            onehot: Onehot payload(s), shape (S, 4) or (B, S, 4).
+                Channel order must be A, C, G, T.
+            mode: Construct mode:
+                - "core": left_adapter + payload + right_adapter + promoter + barcode
+                - "flanked": payload + promoter + barcode
+                - "full": payload only
+            batch_size: Number of sequences per inference batch.
+        """
+        payloads = self._normalize_onehot_inputs(onehot)
+        return self._predict_payloads(payloads, mode=mode, batch_size=batch_size)
+
+    def predict_sequences(
+        self,
+        sequences: str | Iterable[str],
+        *,
+        mode: str = "core",
+        batch_size: int = 64,
+    ) -> np.ndarray:
+        """Predict MPRA activity from raw DNA sequence strings.
+
+        Args:
+            seq: Single sequence or iterable of payload sequences.
+            mode: Construct mode:
+                - "core": left_adapter + payload + right_adapter + promoter + barcode
+                - "flanked": payload + promoter + barcode
+                - "full": payload only
+            batch_size: Number of sequences per inference batch.
+        """
+        payloads = self._normalize_sequence_inputs(sequences)
+        onehot_payloads = [self._encode_sequence(s) for s in payloads]
+        return self._predict_payloads(onehot_payloads, mode=mode, batch_size=batch_size)
 
 
 def load_oracle(
