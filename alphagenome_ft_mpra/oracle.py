@@ -38,7 +38,7 @@ class MPRAOracle:
         pooling_type: str = "sum",
         center_bp: int = 256,
         left_adapter: str | None = DEFAULT_LEFT_ADAPTER,
-        right_adapter: str | None = RIGHT_ADAPTER,
+        right_adapter: str | None = DEFAULT_RIGHT_ADAPTER,
         promoter: str | None = DEFAULT_PROMOTER,
         barcode: str | None = DEFAULT_BARCODE,
     ):
