@@ -21,8 +21,8 @@ from alphagenome_ft import (
 
 from .mpra_heads import EncoderMPRAHead
 
-LEFT_ADAPTER = "AGGACCGGATCAACT"
-RIGHT_ADAPTER= "CATTGCGTGAACCGA"
+DEFAULT_LEFT_ADAPTER = "AGGACCGGATCAACT"
+DEFAULT_RIGHT_ADAPTER= "CATTGCGTGAACCGA"
 DEFAULT_PROMOTER = "TCCATTATATACCCTCTAGTGTCGGTTCACGCAATG"
 DEFAULT_BARCODE = "AGAGACTGAGGCCAC"
 
@@ -37,7 +37,7 @@ class MPRAOracle:
         head_name: str = "mpra_head",
         pooling_type: str = "sum",
         center_bp: int = 256,
-        left_adapter: str | None = LEFT_ADAPTER,
+        left_adapter: str | None = DEFAULT_LEFT_ADAPTER,
         right_adapter: str | None = RIGHT_ADAPTER,
         promoter: str | None = DEFAULT_PROMOTER,
         barcode: str | None = DEFAULT_BARCODE,
