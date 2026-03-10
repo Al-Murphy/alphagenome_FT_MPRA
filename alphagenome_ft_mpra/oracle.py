@@ -333,8 +333,8 @@ def load_oracle(
     base_checkpoint_path: str | Path | None = None,
     base_model_version: str = "all_folds",
     device=None,
-    left_adapter: str | None = None,
-    right_adapter: str | None = None,
+    left_adapter: str | None = DEFAULT_LEFT_ADAPTER,
+    right_adapter: str | None = DEFAULT_RIGHT_ADAPTER,
     promoter: str | None = DEFAULT_PROMOTER,
     barcode: str | None = DEFAULT_BARCODE,
 ) -> MPRAOracle:
