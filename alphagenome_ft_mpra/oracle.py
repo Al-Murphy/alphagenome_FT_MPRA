@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 import jax
 import jax.numpy as jnp
@@ -270,6 +270,63 @@ class MPRAOracle:
         return self._predict_payloads(onehot_payloads, mode=mode, batch_size=batch_size)
 
 
+def _leaves_with_paths(tree, prefix: str = "") -> list[tuple[str, Any]]:
+    """Recursively collect (path, leaf) for all array leaves in a pytree."""
+    out: list[tuple[str, any]] = []
+    if isinstance(tree, dict):
+        for k, v in tree.items():
+            p = f"{prefix}/{k}" if prefix else str(k)
+            if hasattr(v, "shape") and hasattr(v, "size"):
+                out.append((p, v))
+            else:
+                out.extend(_leaves_with_paths(v, p))
+    elif isinstance(tree, (list, tuple)):
+        for i, v in enumerate(tree):
+            p = f"{prefix}/{i}"
+            if hasattr(v, "shape") and hasattr(v, "size"):
+                out.append((p, v))
+            else:
+                out.extend(_leaves_with_paths(v, p))
+    return out
+
+
+def _print_encoder_head_param_count(model, head_name: str) -> None:
+    """Print encoder + head parameter counts for a minimal oracle model.
+
+    Handles both nested (alphagenome/sequence_encoder, head/mpra_head) and
+    flat key layouts (e.g. head/mpra_head/~predict/... at top level).
+    """
+    params = getattr(model, "_params", None)
+    if params is None:
+        return
+
+    n_encoder = 0
+    n_head = 0
+    # Match encoder: "alphagenome/sequence_encoder/..." or flat "alphagenome/sequence_encoder/..."
+    # Match head: "head/mpra_head/..." or "alphagenome/head/mpra_head/..."
+    encoder_marker = "sequence_encoder"
+    head_marker = f"head/{head_name}"
+
+    for path, leaf in _leaves_with_paths(params):
+        try:
+            n = int(leaf.size)
+        except AttributeError:
+            continue
+        # Encoder: path contains sequence_encoder and not transformer/decoder
+        if encoder_marker in path and "transformer" not in path and "decoder" not in path:
+            n_encoder += n
+        # Head: path contains head/mpra_head
+        elif head_marker in path:
+            n_head += n
+
+    if n_encoder > 0 or n_head > 0:
+        print(
+            f"  Encoder parameters:   {n_encoder:,}\n"
+            f"  Head parameters:      {n_head:,}\n"
+            f"  Encoder+Head total:   {n_encoder + n_head:,}"
+        )
+
+
 def load_oracle(
     checkpoint_dir: str | Path,
     *,
@@ -322,6 +379,10 @@ def load_oracle(
         model = load_checkpoint(str(checkpoint_dir), **load_kwargs)
     except TypeError:
         model = load_checkpoint(str(checkpoint_dir))
+
+    # Also show the effective encoder+head size, which is the part actually used
+    # by the minimal oracle (encoder-only forward + MPRA head).
+    _print_encoder_head_param_count(model, head_name)
 
     return MPRAOracle(
         model,
