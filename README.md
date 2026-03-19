@@ -4,7 +4,7 @@
 
 ## Generalist Seq2Func Models for perturbation data Finetuning
 
-This repository demonstrates finetuning **generalist seq2func models** (AlphaGenome, Enformer, and others) on MPRA (Massively Parallel Reporter Assay) and STARR-seq data. The modular approach shown here can be applied to **any generalist seq2func model** that provides sequence embeddings, making it a flexible framework for regulatory sequence prediction tasks.
+This repository demonstrates finetuning **generalist seq2func models** (here AlphaGenome & Enformer) on MPRA (Massively Parallel Reporter Assay) and STARR-seq data. The modular approach shown here can be applied to **any generalist seq2func model** that provides sequence embeddings, making it a flexible framework for regulatory sequence prediction tasks.
 
 The goal is to think of any pretrained generalist model as **modular components** that can be used separately for their _cis_-regulatory logic. Here we finetuned the generalists' encoders to predict reporter activity from genomic sequences, applying it to lentiMPRA and DeepSTARR datasets and evaluating performance zero-shot on CAGI5 data.
 
