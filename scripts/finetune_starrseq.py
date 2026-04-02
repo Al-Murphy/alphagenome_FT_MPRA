@@ -278,6 +278,12 @@ def main():
         default=None,
         help='Path to CSV file to save test set performance results for benchmarking'
     )
+    parser.add_argument(
+        '--save_val_results',
+        type=str,
+        default=None,
+        help='Path to CSV file to save validation set performance results for benchmarking'
+    )
     
     # Checkpointing and early stopping
     parser.add_argument(
@@ -723,6 +729,7 @@ def main():
         use_cached_embeddings=args.use_cached_embeddings,
         lr_scheduler=args.lr_scheduler,
         save_test_results=args.save_test_results,
+        save_val_results=args.save_val_results,
     )
     
     print("\n" + "=" * 80)

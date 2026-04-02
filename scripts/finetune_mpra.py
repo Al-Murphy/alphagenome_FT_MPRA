@@ -347,6 +347,12 @@ def main():
         default=None,
         help='Path to CSV file to save test set performance results for benchmarking'
     )
+    parser.add_argument(
+        '--save_val_results',
+        type=str,
+        default=None,
+        help='Path to CSV file to save validation set performance results for benchmarking'
+    )
     
     # Checkpointing and early stopping
     parser.add_argument(
@@ -616,22 +622,26 @@ def main():
     )
     print("✓ Custom head registered")
     
-    # For flatten pooling with cached embeddings, we need to know the embedding length
-    # BEFORE initializing the model (to set correct weight matrix sizes)
+    # Encoder-output model init needs a concrete dummy sequence length. For cached runs,
+    # infer it from the embedding cache (encoder positions × 128 bp); this is required for
+    # all pooling types, not only flatten (otherwise init_seq_len stays None).
     init_seq_len = None
-    if args.use_cached_embeddings and args.pooling_type == 'flatten':
+    if args.use_cached_embeddings:
+        if args.cache_file is None:
+            raise ValueError("--cache_file must be provided when --use_cached_embeddings is enabled")
         import pickle
-        print(f"\nLoading cache header to get embedding dimensions for flatten pooling...")
+        print(f"\nLoading cache to infer sequence length for model init...")
         with open(args.cache_file, 'rb') as f:
             cache_data = pickle.load(f)
-        # Get max embedding length from cache
         sample_embedding = next(iter(cache_data.values()))
         max_emb_len = sample_embedding.shape[0]  # encoder positions
-        # Convert to sequence length (encoder has 128bp resolution)
         init_seq_len = max_emb_len * 128
-        print(f"  Embedding length: {max_emb_len} positions → init_seq_len={init_seq_len} bp")
+        print(
+            f"  {max_emb_len} encoder positions → init_seq_len={init_seq_len} bp"
+            + (f" (flatten pooling)" if args.pooling_type == 'flatten' else "")
+        )
         del cache_data  # Free memory
-        
+
     if not args.use_cached_embeddings:
         init_seq_len = PROMOTER_CONSTRUCT_LENGTH #full promoter construct length
         if args.pad_n_bases > 0:
@@ -661,8 +671,6 @@ def main():
     
     # Validate cached embeddings setup
     if args.use_cached_embeddings:
-        if args.cache_file is None:
-            raise ValueError("--cache_file must be provided when --use_cached_embeddings is enabled")
         if args.second_stage_lr is not None:
             raise ValueError("Cached embeddings cannot be used with two-stage training (--second_stage_lr). "
                            "Stage 2 requires training the encoder, which needs sequences, not cached embeddings.")
@@ -796,6 +804,7 @@ def main():
         use_cached_embeddings=args.use_cached_embeddings,
         lr_scheduler=args.lr_scheduler,
         save_test_results=args.save_test_results,
+        save_val_results=args.save_val_results,
     )
     
     print("\n" + "=" * 80)

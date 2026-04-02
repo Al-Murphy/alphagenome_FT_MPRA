@@ -32,9 +32,14 @@ def _create_head_only_functions(model: Any, head_name: str, loss_fn: Any = None)
     These functions are cached and reused for performance.
     Computes forward + loss in a SINGLE transform for maximum efficiency.
     
+    Both ``forward_fn`` and ``grad_fn`` take a final ``rng`` argument. Pass a
+    ``jax.random.PRNGKey`` during training so head dropout (metadata ``do``) runs;
+    pass ``None`` for validation/test so dropout is skipped (same contract as
+    ``CustomAlphaGenomeModel._predict(..., rng=None)``).
+    
     Returns a tuple of (forward_fn, grad_fn).
     """
-    cache_key = (id(model), head_name)
+    cache_key = (id(model), head_name, 'head_only_rng_v1')
     
     if cache_key in _cached_functions:
         return _cached_functions[cache_key]
@@ -42,10 +47,10 @@ def _create_head_only_functions(model: Any, head_name: str, loss_fn: Any = None)
     from alphagenome_ft.embeddings_extended import ExtendedEmbeddings
     import haiku as hk
     from alphagenome_ft import custom_heads as custom_heads_module
-    
-    head_config = model._head_configs[head_name]
+    from alphagenome_ft.custom_model import _resolve_user_metadata
+
     num_organisms = len(model._metadata)
-    
+
     # Create SINGLE Haiku transform that does BOTH predict AND loss
     # This avoids creating the head twice (once for predict, once for loss)
     @hk.transform_with_state
@@ -57,11 +62,24 @@ def _create_head_only_functions(model: Any, head_name: str, loss_fn: Any = None)
             encoder_output=encoder_output,
         )
         with hk.name_scope('head'):
-            head = custom_heads_module.create_custom_head(
-                head_name,
-                metadata=head_config.metadata,
-                num_organisms=num_organisms
-            )
+            # Match CustomAlphaGenomeModel encoder forward (not model._head_configs.metadata:
+            # entries are _HeadConfigEntry with .config, not .metadata).
+            registered_cfg = custom_heads_module.get_registered_head_config(head_name)
+            if custom_heads_module.is_custom_config(registered_cfg):
+                head = custom_heads_module.create_registered_head(
+                    head_name,
+                    metadata=None,
+                    num_organisms=num_organisms,
+                )
+            else:
+                head_metadata = _resolve_user_metadata(
+                    head_name=head_name,
+                    head_config=registered_cfg,
+                ) or {}
+                head = custom_heads_module.create_predefined_head_from_config(
+                    registered_cfg,
+                    metadata=head_metadata,
+                )
             predictions = head.predict(embeddings, organism_index)
             
             # Compute loss if targets provided
@@ -74,25 +92,24 @@ def _create_head_only_functions(model: Any, head_name: str, loss_fn: Any = None)
     
     # JIT-compiled forward function (no loss)
     @jax.jit
-    def forward_fn(params, state, encoder_output, organism_index):
+    def forward_fn(params, state, encoder_output, organism_index, rng):
         (predictions, _), new_state = head_forward_and_loss.apply(
             params,
             state,
-            None,  # rng
+            rng,
             encoder_output,
             organism_index,
-            None  # no targets = no loss
+            None,  # no targets = no loss
         )
         return predictions
     
     # JIT-compiled gradient function (with loss in same transform!)
     @jax.jit
-    def grad_fn(params, state, encoder_output, organism_index, targets):
+    def grad_fn(params, state, encoder_output, organism_index, targets, rng):
         """Compute loss and gradients - forward + loss in ONE transform."""
         def loss_fn_inner(p):
-            # Single transform call that does BOTH predict and loss!
             (preds, loss_dict), _ = head_forward_and_loss.apply(
-                p, state, None, encoder_output, organism_index, targets
+                p, state, rng, encoder_output, organism_index, targets
             )
             return loss_dict['loss'], loss_dict
         
@@ -147,8 +164,6 @@ def train_epoch(
         if batch_idx == 0:
             print(f"Processing first batch (JIT compilation - this may take 5-30 minutes)...", flush=True)
         
-        rng_key, subkey = jax.random.split(rng_key)
-        
         # Check if using cached embeddings
         if use_cached_embeddings and 'encoder_output' in batch:
             # Use cached embeddings mode with JIT-compiled gradient function
@@ -162,6 +177,7 @@ def train_epoch(
                 encoder_output = batch['encoder_output'][mini_batch_start:mini_batch_end]
                 targets = batch['y'][mini_batch_start:mini_batch_end]
                 organism_index = batch['organism_index'][mini_batch_start:mini_batch_end]
+                rng_key, step_rng = jax.random.split(rng_key)
                 
                 # Compute gradients using JIT-compiled function (NO function redefinition!)
                 with model._device_context:
@@ -170,7 +186,8 @@ def train_epoch(
                         model._state,
                         encoder_output,
                         organism_index,
-                        targets
+                        targets,
+                        step_rng,
                     )
                 
                 # Accumulate gradients and loss (Pearson is non-additive, so we don't track it here)
@@ -222,10 +239,11 @@ def train_epoch(
                     'y': batch['y'][mini_batch_start:mini_batch_end],
                     'organism_index': batch['organism_index'][mini_batch_start:mini_batch_end],
                 }
+                rng_key, step_rng = jax.random.split(rng_key)
                 
                 # Compute loss and gradients for mini-batch
                 def loss_fn_inner(params):
-                    # Get predictions
+                    # Get predictions (rng enables head dropout during training)
                     with model._device_context:
                         predictions = model._predict(
                             params,
@@ -237,6 +255,7 @@ def train_epoch(
                                 model._metadata[dna_model.Organism.HOMO_SAPIENS].strand_reindexing,
                                 model._device_context._device
                             ),
+                            rng=step_rng,
                         )
                     
                     # Get predictions for our head
@@ -250,48 +269,48 @@ def train_epoch(
                     loss = loss_dict['loss']
                     
                     return loss, loss_dict
-            
-            # Compute gradients for mini-batch
-            grad_fn = jax.value_and_grad(loss_fn_inner, has_aux=True)
-            (loss, loss_dict), grads = grad_fn(model._params)
-            
-            # Accumulate gradients and loss (Pearson is non-additive, so we don't track it here)
-            if accumulated_grads is None:
-                # Initialize accumulated gradients with first gradient
-                accumulated_grads = grads
-                accumulated_loss = loss
-            else:
-                # Add gradients (they'll be averaged when we update)
-                accumulated_grads = jax.tree.map(
-                    lambda acc, new: acc + new,
-                    accumulated_grads,
-                    grads
-                )
-                accumulated_loss += loss
-            
-            step_count += 1
-            
-            # Update parameters after accumulating enough gradients
-            if step_count >= gradient_accumulation_steps:
-                # Average accumulated gradients
-                accumulated_grads = jax.tree.map(
-                    lambda g: g / gradient_accumulation_steps,
-                    accumulated_grads
-                )
                 
-                # Update parameters
-                updates, optimizer_state = opt_update(accumulated_grads, optimizer_state, model._params)
-                model._params = optax.apply_updates(model._params, updates)
+                # Compute gradients for mini-batch
+                grad_fn = jax.value_and_grad(loss_fn_inner, has_aux=True)
+                (loss, loss_dict), grads = grad_fn(model._params)
                 
-                # Track average loss (Pearson is non-additive, so we don't track it here)
-                avg_loss = accumulated_loss / gradient_accumulation_steps
-                total_loss += float(avg_loss)
-                num_batches += 1
+                # Accumulate gradients and loss (Pearson is non-additive, so we don't track it here)
+                if accumulated_grads is None:
+                    # Initialize accumulated gradients with first gradient
+                    accumulated_grads = grads
+                    accumulated_loss = loss
+                else:
+                    # Add gradients (they'll be averaged when we update)
+                    accumulated_grads = jax.tree.map(
+                        lambda acc, new: acc + new,
+                        accumulated_grads,
+                        grads
+                    )
+                    accumulated_loss += loss
                 
-                # Reset accumulation
-                accumulated_grads = None
-                accumulated_loss = 0.0
-                step_count = 0
+                step_count += 1
+                
+                # Update parameters after accumulating enough gradients
+                if step_count >= gradient_accumulation_steps:
+                    # Average accumulated gradients
+                    accumulated_grads = jax.tree.map(
+                        lambda g: g / gradient_accumulation_steps,
+                        accumulated_grads
+                    )
+                    
+                    # Update parameters
+                    updates, optimizer_state = opt_update(accumulated_grads, optimizer_state, model._params)
+                    model._params = optax.apply_updates(model._params, updates)
+                    
+                    # Track average loss (Pearson is non-additive, so we don't track it here)
+                    avg_loss = accumulated_loss / gradient_accumulation_steps
+                    total_loss += float(avg_loss)
+                    num_batches += 1
+                    
+                    # Reset accumulation
+                    accumulated_grads = None
+                    accumulated_loss = 0.0
+                    step_count = 0
     
     # Handle remaining accumulated gradients if batch doesn't divide evenly
     # This must be OUTSIDE the batch loop to avoid extra updates per batch
@@ -356,6 +375,7 @@ def validate(
                     model._state,
                     batch['encoder_output'],
                     batch['organism_index'],
+                    None,  # no head dropout at validation
                 )
                 # Wrap in dict for consistency
                 predictions = {head_name: predictions}
@@ -448,6 +468,7 @@ def test(
                     model._state,
                     batch['encoder_output'],
                     batch['organism_index'],
+                    None,  # no head dropout at test
                 )
                 # Wrap in dict for consistency
                 predictions = {head_name: predictions}
@@ -596,13 +617,14 @@ def _train_stage(
         frozen_state = model._state  # Capture state once
         
         # Define loss function ONCE (this will be traced once per unique input shape)
-        def _seq_loss_fn(params, seq_batch, organism_index, targets):
+        def _seq_loss_fn(params, seq_batch, organism_index, targets, rng):
             """Loss function for sequence mode."""
             with model._device_context:
                 predictions = model._predict(
                     params, frozen_state, seq_batch, organism_index,
                     negative_strand_mask=jnp.zeros(seq_batch.shape[0], dtype=bool),
                     strand_reindexing=strand_reindex,
+                    rng=rng,
                 )
             head_predictions = predictions[head_name]
             loss_batch = {'targets': targets}
@@ -612,9 +634,11 @@ def _train_stage(
         # Create gradient function ONCE (not per batch!)
         _grad_fn = jax.value_and_grad(_seq_loss_fn, has_aux=True)
         
-        def _compute_grads(params, seq_batch, organism_index, targets):
+        def _compute_grads(params, seq_batch, organism_index, targets, rng):
             """Wrapper that returns (grads, loss, loss_dict)."""
-            (loss, loss_dict), grads = _grad_fn(params, seq_batch, organism_index, targets)
+            (loss, loss_dict), grads = _grad_fn(
+                params, seq_batch, organism_index, targets, rng
+            )
             return grads, loss, loss_dict
         
         seq_grad_fn = _compute_grads
@@ -630,7 +654,10 @@ def _train_stage(
         warmup_y = warmup_batch['y']
         print(f"  Warmup batch shape: {warmup_seq.shape}", flush=True)
         # Run actual gradient computation to trigger tracing
-        _ = seq_grad_fn(model._params, warmup_seq, warmup_org, warmup_y)
+        warmup_rng = jax.random.PRNGKey(0)
+        _ = seq_grad_fn(
+            model._params, warmup_seq, warmup_org, warmup_y, warmup_rng
+        )
         print("✓ Model warmed up", flush=True)
     
     for epoch in range(num_epochs):
@@ -673,8 +700,6 @@ def _train_stage(
         step_count = 0
         
         for batch in train_loader:
-            rng_key, subkey = jax.random.split(rng_key)
-            
             # Process batch with gradient accumulation
             if use_cached_embeddings and 'encoder_output' in batch:
                 batch_size = batch['encoder_output'].shape[0]
@@ -690,6 +715,7 @@ def _train_stage(
                     encoder_output = batch['encoder_output'][mini_batch_start:mini_batch_end]
                     targets = batch['y'][mini_batch_start:mini_batch_end]
                     organism_index = batch['organism_index'][mini_batch_start:mini_batch_end]
+                    rng_key, step_rng = jax.random.split(rng_key)
                     
                     # Use cached JIT-compiled gradient function
                     with model._device_context:
@@ -698,7 +724,8 @@ def _train_stage(
                             model._state,
                             encoder_output,
                             organism_index,
-                            targets
+                            targets,
+                            step_rng,
                         )
                 else:
                     # Use pre-compiled gradient function (created once per stage, not per batch!)
@@ -706,11 +733,13 @@ def _train_stage(
                     targets = batch['y'][mini_batch_start:mini_batch_end]
                     organism_index = batch['organism_index'][mini_batch_start:mini_batch_end]
                     
+                    rng_key, step_rng = jax.random.split(rng_key)
                     grads, loss, loss_dict = seq_grad_fn(
                         model._params,
                         seq_batch,
                         organism_index,
-                        targets
+                        targets,
+                        step_rng,
                     )
                 
                 # Accumulate gradients and loss (Pearson is non-additive, so we don't track it here)
@@ -990,6 +1019,7 @@ def train(
     use_cached_embeddings: bool = False,
     lr_scheduler: str | None = None,
     save_test_results: str | None = None,
+    save_val_results: str | None = None,
     save_minimal_model: bool = False,
 ) -> dict:
     """Complete training loop with checkpointing and early stopping.
@@ -1039,6 +1069,9 @@ def train(
             Default is False.
         gradient_clip: If provided, clips gradients by global norm to this value.
             Helps stabilize training and prevent gradient explosion. Try 1.0 or 5.0. Default is None.
+        save_test_results: If set, path to a CSV file to append final test metrics (benchmarking).
+        save_val_results: If set, path to a CSV file to append final validation metrics (benchmarking).
+            Only written when validation was run (history contains val_loss).
         
     Returns:
         Dictionary with training history (combined from both stages if second_stage_lr is provided)
@@ -1489,6 +1522,59 @@ def train(
     else:
         print("\nTraining completed!")
     
+    # Save validation results to CSV if requested (same indexing convention as test history)
+    if save_val_results and history['val_loss']:
+        from pathlib import Path
+        import csv
+
+        val_file = Path(save_val_results)
+        val_file.parent.mkdir(parents=True, exist_ok=True)
+
+        best_val_loss = min(history['val_loss'])
+        best_val_epoch = history['val_loss'].index(best_val_loss) + 1
+        best_val_pearson = (
+            history['val_pearson'][best_val_epoch - 1]
+            if best_val_epoch <= len(history['val_pearson'])
+            else history['val_pearson'][-1]
+        )
+        final_val_loss = history['val_loss'][-1]
+        final_val_pearson = history['val_pearson'][-1]
+
+        training_mode = 'stage2' if second_stage_lr is not None else 'stage1'
+
+        file_exists = val_file.exists()
+        with open(val_file, 'a', newline='') as f:
+            writer = csv.DictWriter(
+                f,
+                fieldnames=[
+                    'run_name',
+                    'cell_type',
+                    'training_mode',
+                    'best_val_loss',
+                    'best_val_pearson',
+                    'best_val_epoch',
+                    'final_val_loss',
+                    'final_val_pearson',
+                ],
+            )
+            if not file_exists:
+                writer.writeheader()
+            writer.writerow(
+                {
+                    'run_name': wandb_name if wandb_name else 'unnamed',
+                    'cell_type': wandb_config.get('cell_type', 'unknown')
+                    if wandb_config
+                    else 'unknown',
+                    'training_mode': training_mode,
+                    'best_val_loss': f'{best_val_loss:.6f}',
+                    'best_val_pearson': f'{best_val_pearson:.4f}',
+                    'best_val_epoch': best_val_epoch,
+                    'final_val_loss': f'{final_val_loss:.6f}',
+                    'final_val_pearson': f'{final_val_pearson:.4f}',
+                }
+            )
+        print(f"\n✓ Validation results saved to {val_file}")
+
     # Save test results to CSV if requested
     if save_test_results and test_loader and history['test_loss']:
         from pathlib import Path

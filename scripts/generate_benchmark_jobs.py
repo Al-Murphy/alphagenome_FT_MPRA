@@ -48,17 +48,21 @@ skipped_runs=0
 check_run_completed() {{
     local run_name="$1"
     local results_file="./results/benchmark_results_{cell_type}.csv"
+    local val_results_file="./results/benchmark_val_results_{cell_type}.csv"
     
     if [ ! -f "$results_file" ]; then
         return 1  # File doesn't exist, run not completed
     fi
     
-    # Check if run_name exists in the CSV file (first column)
-    if grep -q "^$run_name," "$results_file" 2>/dev/null; then
-        return 0  # Run found, already completed
-    else
-        return 1  # Run not found, needs to run
+    # Check if run_name exists in the test CSV (first column)
+    if ! grep -q "^$run_name," "$results_file" 2>/dev/null; then
+        return 1
     fi
+    # If a val-results file exists, require the same run there too (backfill after adding --save_val_results)
+    if [ -f "$val_results_file" ] && ! grep -q "^$run_name," "$val_results_file" 2>/dev/null; then
+        return 1
+    fi
+    return 0
 }}
 
 # Function to run a single hyperparameter combination
@@ -81,7 +85,7 @@ run_experiment() {{
         return 0
     fi
     
-    echo "Command: python scripts/finetune_mpra.py --cell_type {cell_type} --wandb_name $run_name --use_cached_embeddings --cache_file ./.cache/embeddings/{cell_type}_train_embeddings.pkl --save_test_results ./results/benchmark_results_{cell_type}.csv $args"
+    echo "Command: python scripts/finetune_mpra.py --cell_type {cell_type} --wandb_name $run_name --use_cached_embeddings --cache_file ./.cache/embeddings/{cell_type}_train_embeddings.pkl --save_test_results ./results/benchmark_results_{cell_type}.csv --save_val_results ./results/benchmark_val_results_{cell_type}.csv $args"
     echo ""
     
     if python scripts/finetune_mpra.py \\
@@ -90,6 +94,7 @@ run_experiment() {{
         --use_cached_embeddings \\
         --cache_file ./.cache/embeddings/{cell_type}_train_embeddings.pkl \\
         --save_test_results ./results/benchmark_results_{cell_type}.csv \\
+        --save_val_results ./results/benchmark_val_results_{cell_type}.csv \\
         $args; then
         echo "✓ Run $run_num/$total_runs ($config_name) completed successfully"
     else

@@ -344,13 +344,15 @@ class EncoderMPRAHead(CustomHead):
         # Multiple hidden layers
         for i, hidden_size in enumerate(self._hidden_sizes):
             x = hk.Linear(hidden_size, name=f'hidden_{i}')(x)
-            # Apply dropout only during training (when RNG is available)
+            # Dropout: only when Haiku has an RNG stack (training forward with rng passed into
+            # transform.apply). For evaluation, CustomAlphaGenomeModel._predict uses rng=None so
+            # hk.next_rng_key() raises and we skip dropout (no user-visible error).
+            # We intentionally swallow that error rather than apply dropout during eval.
             if self._do is not None:
                 try:
                     rng_key = hk.next_rng_key()
                     x = hk.dropout(rng_key, self._do, x)
                 except (RuntimeError, ValueError, AttributeError):
-                    # RNG not available (evaluation mode) - skip dropout
                     pass
             # Apply activation
             if self._activation == 'gelu':
@@ -539,7 +541,7 @@ class DeepSTARRHead(CustomHead):
         # Multiple hidden layers
         for i, hidden_size in enumerate(self._hidden_sizes):
             x = hk.Linear(hidden_size, name=f'hidden_{i}')(x)
-            # Apply dropout during training
+            # Same dropout contract as EncoderMPRAHead (rng=None on eval → skip, silent).
             if self._do is not None:
                 try:
                     rng_key = hk.next_rng_key()
