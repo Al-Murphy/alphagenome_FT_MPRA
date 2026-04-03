@@ -18,9 +18,12 @@ import jax
 import jax.numpy as jnp
 from tqdm import tqdm
 
+from alphagenome.models import dna_output
 from alphagenome_ft import create_model_with_custom_heads
 from alphagenome_research.model import dna_model
 from alphagenome_ft_mpra import DeepSTARRDataset
+
+_PREDICT_REQUESTED_OUTPUTS: tuple = tuple(dna_output.OutputType)
 
 
 def compute_sequence_hash(sequence: str) -> str:
@@ -105,6 +108,7 @@ def main():
                     model._state,
                     batch_seqs,
                     batch_orgs,
+                    requested_outputs=_PREDICT_REQUESTED_OUTPUTS,
                     negative_strand_mask=jnp.zeros(len(batch_seqs), dtype=bool),
                     strand_reindexing=jax.device_put(
                         model._metadata[dna_model.Organism.HOMO_SAPIENS].strand_reindexing,

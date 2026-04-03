@@ -83,6 +83,8 @@ from alphagenome_ft_mpra.seq_loader import seq_loader  # type: ignore
 
 PROMOTER_CONSTRUCT_LENGTH = 281  # same init_seq_len as finetune_mpra.py
 
+_PREDICT_REQUESTED_OUTPUTS: tuple = tuple(dna_output.OutputType)
+
 
 # ---------------------------------------------------------------------------
 # Augmentation utilities
@@ -365,6 +367,7 @@ def batch_predict_mpra(
                 model._state,
                 batch_seq,
                 organism_index,
+                requested_outputs=_PREDICT_REQUESTED_OUTPUTS,
                 negative_strand_mask=jnp.zeros(batch_seq.shape[0], dtype=bool),
                 strand_reindexing=jax.device_put(
                     model._metadata[dna_model.Organism.HOMO_SAPIENS].strand_reindexing,  # type: ignore[attr-defined]

@@ -64,6 +64,8 @@ from alphagenome_ft import (
 )
 from alphagenome_ft_mpra import EncoderMPRAHead, LentiMPRADataset, MPRADataLoader
 
+_PREDICT_REQUESTED_OUTPUTS: tuple = tuple(dna_output.OutputType)
+
 
 def get_predictions_for_saving(
     model,
@@ -98,6 +100,7 @@ def get_predictions_for_saving(
                 model._state,
                 batch['seq'],
                 batch['organism_index'],
+                requested_outputs=_PREDICT_REQUESTED_OUTPUTS,
                 negative_strand_mask=jnp.zeros(len(batch['seq']), dtype=bool),
                 strand_reindexing=jax.device_put(
                     model._metadata[dna_model.Organism.HOMO_SAPIENS].strand_reindexing,
@@ -178,6 +181,7 @@ def compute_metrics_using_head_loss(
                 model._state,
                 batch['seq'],
                 batch['organism_index'],
+                requested_outputs=_PREDICT_REQUESTED_OUTPUTS,
                 negative_strand_mask=jnp.zeros(len(batch['seq']), dtype=bool),
                 strand_reindexing=jax.device_put(
                     model._metadata[dna_model.Organism.HOMO_SAPIENS].strand_reindexing,

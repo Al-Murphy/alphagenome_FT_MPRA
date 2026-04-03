@@ -43,10 +43,11 @@ class _DummyModel:
         sequences,
         organism_indices,
         *,
+        requested_outputs,
         negative_strand_mask,
         strand_reindexing,
     ):
-        del params, state, organism_indices, negative_strand_mask, strand_reindexing
+        del params, state, organism_indices, requested_outputs, negative_strand_mask, strand_reindexing
         arr = np.asarray(sequences)
         self.last_sequence_shape = arr.shape
         # One scalar per position so pooling behavior is easy to validate.

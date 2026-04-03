@@ -26,6 +26,8 @@ DEFAULT_RIGHT_ADAPTER= "CATTGCGTGAACCGA"
 DEFAULT_PROMOTER = "TCCATTATATACCCTCTAGTGTCGGTTCACGCAATG"
 DEFAULT_BARCODE = "AGAGACTGAGGCCAC"
 
+_PREDICT_REQUESTED_OUTPUTS: tuple = tuple(dna_output.OutputType)
+
 
 class MPRAOracle:
     """Lightweight predictor around a fine-tuned MPRA head."""
@@ -196,6 +198,7 @@ class MPRAOracle:
                 self.model._state,
                 batch_seq,
                 batch_org,
+                requested_outputs=_PREDICT_REQUESTED_OUTPUTS,
                 negative_strand_mask=jnp.zeros(batch_seq.shape[0], dtype=bool),
                 strand_reindexing=jax.device_put(
                     self.model._metadata[dna_model.Organism.HOMO_SAPIENS].strand_reindexing,

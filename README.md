@@ -88,7 +88,7 @@ Custom Task-Specific Heads (trainable)
 
 ### Fine-tuning Strategy
 
-1. **Backbone**: Freeze pretrained generalist model (encoder/transformer layers)
+1. **Backbone**: Held fixed during training via **Optax optimizer masking** in `alphagenome-ft` (not only `stop_gradient` on parameters). Call `freeze_except_head(...)` before training so the default training loop uses a heads-only optimizer.
 2. **Embeddings**: Extract multi-resolution sequence representations
 3. **Heads**: Train task-specific prediction layers on top of frozen embeddings
 
@@ -132,10 +132,10 @@ base_model = dna_model.create_from_kaggle('all_folds')
 model = wrap_pretrained_model(base_model)
 model = add_custom_heads_to_model(model, custom_heads=['mpra_head'])
 
-# 3. Freeze backbone for finetuning
-model.freeze_backbone()
+# 3. Mark head-only finetuning (backbone fixed during training)
+model.freeze_except_head('mpra_head')  # sets optimizer hint; see alphagenome-ft docs
 
-# 4. Train on your MPRA data
+# 4. Train on your MPRA data (training uses alphagenome_ft.optimizer_utils masking)
 # See scripts/finetune_mpra.py for complete training example
 ```
 

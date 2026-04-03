@@ -2,10 +2,16 @@
 Training loop functions for AlphaGenome MPRA finetuning.
 """
 
-from typing import Any
+from functools import partial
+from typing import Any, Optional
+
 import jax
 import jax.numpy as jnp
+from alphagenome.models import dna_output
 from alphagenome_research.model import dna_model
+
+# Required by ``CustomAlphaGenomeModel._predict`` / upstream ``_predict`` API.
+_PREDICT_REQUESTED_OUTPUTS: tuple = tuple(dna_output.OutputType)
 
 try:
     import optax
@@ -19,6 +25,8 @@ try:
 except ImportError:
     WANDB_AVAILABLE = False
     print("Warning: wandb not installed. Install with: pip install wandb")
+
+from alphagenome_ft.optimizer_utils import create_optimizer as ft_create_optimizer
 
 from .data import MPRADataLoader
 
@@ -35,7 +43,7 @@ def _create_head_only_functions(model: Any, head_name: str, loss_fn: Any = None)
     Both ``forward_fn`` and ``grad_fn`` take a final ``rng`` argument. Pass a
     ``jax.random.PRNGKey`` during training so head dropout (metadata ``do``) runs;
     pass ``None`` for validation/test so dropout is skipped (same contract as
-    ``CustomAlphaGenomeModel._predict(..., rng=None)``).
+    ``CustomAlphaGenomeModel._predict(..., requested_outputs=..., rng=None)``).
     
     Returns a tuple of (forward_fn, grad_fn).
     """
@@ -250,6 +258,7 @@ def train_epoch(
                             model._state,
                             mini_batch['seq'],
                             mini_batch['organism_index'],
+                            requested_outputs=_PREDICT_REQUESTED_OUTPUTS,
                             negative_strand_mask=jnp.zeros(len(mini_batch['seq']), dtype=bool),
                             strand_reindexing=jax.device_put(
                                 model._metadata[dna_model.Organism.HOMO_SAPIENS].strand_reindexing,
@@ -385,6 +394,7 @@ def validate(
                     model._state,
                     batch['seq'],
                     batch['organism_index'],
+                    requested_outputs=_PREDICT_REQUESTED_OUTPUTS,
                     negative_strand_mask=jnp.zeros(len(batch['seq']), dtype=bool),
                     strand_reindexing=jax.device_put(
                         model._metadata[dna_model.Organism.HOMO_SAPIENS].strand_reindexing,
@@ -478,6 +488,7 @@ def test(
                     model._state,
                     batch['seq'],
                     batch['organism_index'],
+                    requested_outputs=_PREDICT_REQUESTED_OUTPUTS,
                     negative_strand_mask=jnp.zeros(len(batch['seq']), dtype=bool),
                     strand_reindexing=jax.device_put(
                         model._metadata[dna_model.Organism.HOMO_SAPIENS].strand_reindexing,
@@ -621,7 +632,11 @@ def _train_stage(
             """Loss function for sequence mode."""
             with model._device_context:
                 predictions = model._predict(
-                    params, frozen_state, seq_batch, organism_index,
+                    params,
+                    frozen_state,
+                    seq_batch,
+                    organism_index,
+                    requested_outputs=_PREDICT_REQUESTED_OUTPUTS,
                     negative_strand_mask=jnp.zeros(seq_batch.shape[0], dtype=bool),
                     strand_reindexing=strand_reindex,
                     rng=rng,
@@ -1021,12 +1036,18 @@ def train(
     save_test_results: str | None = None,
     save_val_results: str | None = None,
     save_minimal_model: bool = False,
+    freeze_backbone: Optional[bool] = None,
 ) -> dict:
     """Complete training loop with checkpointing and early stopping.
     
     Supports two-stage training:
     - Stage 1: Train with frozen backbone (head only)
     - Stage 2: Unfreeze encoder and continue training from best Stage 1 checkpoint
+    
+    Stage 1 uses :func:`alphagenome_ft.optimizer_utils.create_optimizer` with
+    ``heads_only=True`` when the backbone should stay fixed. If ``freeze_backbone`` is
+    ``None`` (default), this follows :meth:`alphagenome_ft.CustomAlphaGenomeModel.freeze_except_head`
+    (``model._heads_only_finetune_default``). Pass ``False`` for full-model training.
     
     Args:
         model: CustomAlphaGenomeModel instance (will be modified in-place)
@@ -1072,6 +1093,9 @@ def train(
         save_test_results: If set, path to a CSV file to append final test metrics (benchmarking).
         save_val_results: If set, path to a CSV file to append final validation metrics (benchmarking).
             Only written when validation was run (history contains val_loss).
+        freeze_backbone: If True, Stage 1 uses heads-only optimizer masking. If False, train
+            the full tree. If None, use the hint set by ``freeze_except_head`` on the model
+            (recommended: call ``freeze_except_head`` in the driver script and omit this).
         
     Returns:
         Dictionary with training history (combined from both stages if second_stage_lr is provided)
@@ -1132,6 +1156,15 @@ def train(
     if wandb_config:
         optimizer_type = wandb_config.get('optimizer', 'adam')
         weight_decay = wandb_config.get('weight_decay', None)
+
+    if freeze_backbone is None:
+        if hasattr(model, "_heads_only_finetune_default"):
+            heads_only_stage1 = model._heads_only_finetune_default
+        else:
+            # Older CustomAlphaGenomeModel (before freeze hint): preserve previous default
+            heads_only_stage1 = True
+    else:
+        heads_only_stage1 = freeze_backbone
     
     # Create learning rate schedule if specified
     def create_lr_schedule(base_lr: float, total_steps: int):
@@ -1157,43 +1190,20 @@ def train(
             print(f"Warning: Unknown lr_scheduler '{lr_scheduler}', using constant LR")
             return base_lr
     
-    # Create optimizer with gradient clipping
+    # Create optimizer with gradient clipping (masking from alphagenome_ft.optimizer_utils)
     # If resuming from Stage 2, we'll create Stage 2 optimizer later
-    def create_optimizer(lr_or_schedule):
-        """Create optimizer with optional gradient clipping and weight decay.
-        
-        Weight decay is applied differently for Adam vs AdamW:
-        - AdamW: built-in decoupled weight decay
-        - Adam: L2 regularization via optax.add_decayed_weights
-        
-        Args:
-            lr_or_schedule: Learning rate (float) or schedule (callable)
-        """
-        if optimizer_type.lower() == 'adamw':
-            # AdamW has built-in decoupled weight decay
-            if weight_decay is not None:
-                optimizer = optax.adamw(learning_rate=lr_or_schedule, weight_decay=weight_decay)
-            else:
-                optimizer = optax.adamw(learning_rate=lr_or_schedule)
-        else:  # adam
-            # Base Adam optimizer
-            optimizer = optax.adam(lr_or_schedule)
-            
-            # Add L2 regularization if weight_decay specified
-            if weight_decay is not None:
-                optimizer = optax.chain(
-                    optax.add_decayed_weights(weight_decay),
-                    optimizer
-                )
-        
-        # Add gradient clipping if specified
-        if gradient_clip is not None:
-            optimizer = optax.chain(
-                optax.clip_by_global_norm(gradient_clip),
-                optimizer
-            )
-        
-        return optimizer
+    def create_optimizer(lr_or_schedule, *, heads_only: bool = False):
+        """Wrap :func:`alphagenome_ft.optimizer_utils.create_optimizer` for this run."""
+        ot = "adamw" if optimizer_type.lower() == "adamw" else "adam"
+        return ft_create_optimizer(
+            model._params,
+            trainable_head_names=(head_name,),
+            learning_rate=lr_or_schedule,
+            weight_decay=weight_decay,
+            heads_only=heads_only,
+            optimizer_type=ot,
+            gradient_clip_global_norm=gradient_clip,
+        )
     
     # Calculate total steps for LR scheduler
     steps_per_epoch = len(train_loader)
@@ -1202,7 +1212,7 @@ def train(
     if not resume_from_stage2:
         # Create LR schedule and optimizer for Stage 1
         lr_schedule = create_lr_schedule(learning_rate, total_stage1_steps)
-        optimizer = create_optimizer(lr_schedule)
+        optimizer = create_optimizer(lr_schedule, heads_only=heads_only_stage1)
         optimizer_state = optimizer.init(model._params)
         opt_update = optimizer.update
     else:
@@ -1235,6 +1245,14 @@ def train(
         print(f"Stage 2: {stage2_epochs} epochs (unfrozen encoder, LR={second_stage_lr})")
     else:
         print(f"Single-stage training: {stage1_epochs} epochs (LR={learning_rate})")
+    if not resume_from_stage2:
+        if heads_only_stage1:
+            print(
+                f"Stage 1 optimizer: heads-only (alphagenome_ft.optimizer_utils); "
+                f"trainable head={head_name!r}"
+            )
+        else:
+            print("Stage 1 optimizer: full parameter tree (no masking)")
     print(f"{'=' * 80}\n")
     
     # Create separate checkpoint directory for Stage 1
@@ -1288,7 +1306,7 @@ def train(
             start_epoch=0,
             use_cached_embeddings=use_cached_embeddings,
             lr_scheduler=lr_scheduler,
-            optimizer_factory=create_optimizer,
+            optimizer_factory=partial(create_optimizer, heads_only=heads_only_stage1),
         )
         
         # Merge Stage 1 history
@@ -1459,7 +1477,7 @@ def train(
         print(f"\nCreating optimizer for Stage 2 (LR={second_stage_lr})...")
         total_stage2_steps = stage2_epochs * steps_per_epoch
         lr_schedule_stage2 = create_lr_schedule(second_stage_lr, total_stage2_steps)
-        optimizer_stage2 = create_optimizer(lr_schedule_stage2)
+        optimizer_stage2 = create_optimizer(lr_schedule_stage2, heads_only=False)
         optimizer_state = optimizer_stage2.init(model._params)
         opt_update = optimizer_stage2.update
         print("✓ Optimizer created")
