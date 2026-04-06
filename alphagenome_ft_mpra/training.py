@@ -168,7 +168,8 @@ def train_epoch(
         _, grad_fn = _create_head_only_functions(model, head_name, loss_fn)
     
     for batch_idx, batch in enumerate(dataloader):
-        # Print progress indicator for first batch (JIT compilation can be slow)
+        # First batch: @jax.jit on the head forward/grad path traces the Haiku apply graph and XLA
+        # compiles it for this batch's shapes; that one-time compile dominates wall time (often minutes).
         if batch_idx == 0:
             print(f"Processing first batch (JIT compilation - this may take 5-30 minutes)...", flush=True)
         

@@ -4,6 +4,9 @@
 This script queries WandB for all benchmark runs and extracts their test metrics
 to recreate the benchmark_results_{cell_type}.csv files.
 
+If multiple WandB runs share the same run name (e.g. a rerun), only the newest
+run by created_at is kept so CSVs match the latest experiment.
+
 Usage:
     python scripts/regenerate_benchmark_results.py
     python scripts/regenerate_benchmark_results.py --project alphagenome-mpra --output_dir results/
@@ -11,8 +14,41 @@ Usage:
 
 import argparse
 import csv
+from datetime import datetime, timezone
 from pathlib import Path
 import wandb
+
+
+def _run_created_timestamp(run) -> float:
+    """Parse WandB run created_at for ordering (newer rerun wins on duplicate names)."""
+    raw = getattr(run, "created_at", None)
+    if raw is None:
+        return 0.0
+    if isinstance(raw, datetime):
+        if raw.tzinfo is None:
+            raw = raw.replace(tzinfo=timezone.utc)
+        return raw.timestamp()
+    if isinstance(raw, str):
+        try:
+            s = raw.replace("Z", "+00:00")
+            return datetime.fromisoformat(s).timestamp()
+        except ValueError:
+            return 0.0
+    return 0.0
+
+
+def dedupe_latest_per_run_name(rows_with_ts: list[tuple[float, dict]]) -> list[dict]:
+    """Keep one row per run_name: the run with the largest created timestamp."""
+    rows_with_ts.sort(key=lambda x: x[0], reverse=True)
+    seen: set[str] = set()
+    out: list[dict] = []
+    for _ts, row in rows_with_ts:
+        name = row["run_name"]
+        if name in seen:
+            continue
+        seen.add(name)
+        out.append(row)
+    return out
 
 
 def extract_cell_type_from_run_name(run_name: str) -> str:
@@ -119,8 +155,8 @@ def regenerate_results(project: str, output_dir: Path, run_prefix: str = 'benchm
         print("No benchmark runs found! Check your project name and run prefix.")
         return
     
-    # Group runs by cell type
-    results_by_cell_type = {
+    # Group runs by cell type (values are list of (created_ts, row_dict))
+    results_by_cell_type: dict[str, list[tuple[float, dict]]] = {
         'HepG2': [],
         'K562': [],
         'WTC11': [],
@@ -151,17 +187,23 @@ def regenerate_results(project: str, output_dir: Path, run_prefix: str = 'benchm
             print(f"    Warning: No test metrics found for {run_name}")
             continue
         
-        # Add to results
-        results_by_cell_type[cell_type].append({
-            'run_name': run_name,
-            'cell_type': cell_type,
-            'training_mode': training_mode,
-            'best_test_loss': metrics['best_test_loss'],
-            'best_test_pearson': metrics['best_test_pearson'],
-            'best_test_epoch': metrics['best_test_epoch'],
-            'final_test_loss': metrics['final_test_loss'],
-            'final_test_pearson': metrics['final_test_pearson'],
-        })
+        # Add to results (timestamp resolves duplicate run names in WandB)
+        ts = _run_created_timestamp(run)
+        results_by_cell_type[cell_type].append(
+            (
+                ts,
+                {
+                    'run_name': run_name,
+                    'cell_type': cell_type,
+                    'training_mode': training_mode,
+                    'best_test_loss': metrics['best_test_loss'],
+                    'best_test_pearson': metrics['best_test_pearson'],
+                    'best_test_epoch': metrics['best_test_epoch'],
+                    'final_test_loss': metrics['final_test_loss'],
+                    'final_test_pearson': metrics['final_test_pearson'],
+                },
+            )
+        )
         
         print(f"    ✓ Best test Pearson: {metrics['best_test_pearson']:.4f} (epoch {metrics['best_test_epoch']})")
     
@@ -169,10 +211,15 @@ def regenerate_results(project: str, output_dir: Path, run_prefix: str = 'benchm
     output_dir.mkdir(parents=True, exist_ok=True)
     
     print("\nWriting CSV files...")
-    for cell_type, results in results_by_cell_type.items():
-        if len(results) == 0:
+    for cell_type, pairs in results_by_cell_type.items():
+        if len(pairs) == 0:
             print(f"  Warning: No results for {cell_type}")
             continue
+        
+        results = dedupe_latest_per_run_name(pairs)
+        n_dup = len(pairs) - len(results)
+        if n_dup:
+            print(f"  Note: {cell_type}: dropped {n_dup} older WandB run(s) with duplicate run_name")
         
         output_file = output_dir / f'benchmark_results_{cell_type}.csv'
         
