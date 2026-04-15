@@ -86,6 +86,26 @@ PROMOTER_CONSTRUCT_LENGTH = 281  # same init_seq_len as finetune_mpra.py
 _PREDICT_REQUESTED_OUTPUTS: tuple = tuple(dna_output.OutputType)
 
 
+def resolve_checkpoint_dir(path: Path) -> Path:
+    """Return a directory that contains ``config.json`` (and typically ``checkpoint/``).
+
+    Training layouts often nest the Orbax bundle under ``stage1/`` or ``stage2/`` while the
+    parent run folder has no ``config.json``. Accept the parent path and resolve to the
+    inner directory automatically.
+    """
+    path = path.resolve()
+    if (path / "config.json").exists():
+        return path
+    for sub in ("stage2", "stage1"):
+        cand = path / sub
+        if (cand / "config.json").exists():
+            return cand
+    for child in sorted(path.iterdir()):
+        if child.is_dir() and (child / "config.json").exists():
+            return child
+    return path
+
+
 # ---------------------------------------------------------------------------
 # Augmentation utilities
 # ---------------------------------------------------------------------------
@@ -481,7 +501,7 @@ def load_finetuned_mpra_model(
     model loading across all scripts. The MPRA head metadata (center_bp, pooling_type, etc.)
     matches training, and both Stage 1 (heads-only) and Stage 2 (full-model) checkpoints work.
     """
-    checkpoint_dir = checkpoint_dir.resolve()
+    checkpoint_dir = resolve_checkpoint_dir(Path(checkpoint_dir))
     config_path = checkpoint_dir / "config.json"
 
     # Default head metadata (overridden by config if present)
@@ -609,7 +629,7 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    checkpoint_dir = Path(args.checkpoint_dir).resolve()
+    checkpoint_dir = resolve_checkpoint_dir(Path(args.checkpoint_dir))
     repo_root = Path(__file__).parent.parent.resolve()
 
     # Default paths to local data directory if not provided explicitly

@@ -67,6 +67,26 @@ from alphagenome_ft_mpra import EncoderMPRAHead, LentiMPRADataset, MPRADataLoade
 _PREDICT_REQUESTED_OUTPUTS: tuple = tuple(dna_output.OutputType)
 
 
+def resolve_checkpoint_dir(path: Path) -> Path:
+    """Return a directory that contains ``config.json`` (and typically ``checkpoint/``).
+
+    Training layouts often nest the Orbax bundle under ``stage1/`` or ``stage2/`` while the
+    parent run folder has no ``config.json``. Accept the parent path and resolve to the
+    inner directory automatically.
+    """
+    path = path.resolve()
+    if (path / 'config.json').exists():
+        return path
+    for sub in ('stage2', 'stage1'):
+        cand = path / sub
+        if (cand / 'config.json').exists():
+            return cand
+    for child in sorted(path.iterdir()):
+        if child.is_dir() and (child / 'config.json').exists():
+            return child
+    return path
+
+
 def get_predictions_for_saving(
     model,
     dataloader: MPRADataLoader,
@@ -300,8 +320,8 @@ def main():
     
     args = parser.parse_args()
     
-    # Resolve checkpoint directory to an absolute path for Orbax
-    checkpoint_dir = Path(args.checkpoint_dir).resolve()
+    # Resolve checkpoint directory to an absolute path for Orbax (handles stage1/stage2)
+    checkpoint_dir = resolve_checkpoint_dir(Path(args.checkpoint_dir))
     base_checkpoint_path = args.base_checkpoint_path
     
     print("=" * 80)

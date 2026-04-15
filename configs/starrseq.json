@@ -14,14 +14,14 @@
   "model": {
     "center_bp": 256,
     "pooling_type": "flatten",
-    "nl_size": "512,512",
+    "nl_size": "2048",
     "do": 0.5,
     "activation": "relu"
   },
   
   "training": {
     "num_epochs": 100,
-    "learning_rate": 0.001,
+    "learning_rate": 5e-4,
     "optimizer": "adam",
     "weight_decay": 1e-6,
     "gradient_accumulation_steps": 1,
@@ -35,7 +35,7 @@
   
   "two_stage": {
     "enabled": true,
-    "second_stage_lr": 1e-05,
+    "second_stage_lr": 5e-4,
     "second_stage_epochs": 50
   },
   

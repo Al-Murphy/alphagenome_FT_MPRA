@@ -5,7 +5,7 @@
   "cell_type": "WTC11",
   
   "data": {
-    "batch_size": 32,
+    "batch_size": 128,
     "random_shift": true,
     "random_shift_likelihood": 0.5,
     "reverse_complement": true,
@@ -16,13 +16,13 @@
     "center_bp": 256,
     "pooling_type": "flatten",
     "nl_size": "1024",
-    "do": 0,
+    "do": 0.3,
     "activation": "relu"
   },
   
   "training": {
     "num_epochs": 100,
-    "learning_rate": 0.001,
+    "learning_rate": 1e-3,
     "optimizer": "adam",
     "weight_decay": 1e-6,
     "gradient_accumulation_steps": 1,

@@ -37,7 +37,7 @@ def load_lentimpra_data():
     """
     data = [
         # MPRALegNet
-        {'model': 'MPRALegNet', 'regime': '', 'cell_type': 'HepG2', 'pearson_r': 0.781},
+        {'model': 'MPRALegNet', 'regime': '', 'cell_type': 'HepG2', 'pearson_r':  0.781},
         {'model': 'MPRALegNet', 'regime': '', 'cell_type': 'K562', 'pearson_r': 0.81},
         {'model': 'MPRALegNet', 'regime': '', 'cell_type': 'WTC11', 'pearson_r': 0.727},
         # Enformer Probing
@@ -49,13 +49,13 @@ def load_lentimpra_data():
         {'model': 'Enf. MPRA', 'regime': 'Fine-tuned', 'cell_type': 'K562', 'pearson_r': 0.835},
         {'model': 'Enf. MPRA', 'regime': 'Fine-tuned', 'cell_type': 'WTC11', 'pearson_r': 0.804},
         # AlphaGenome Probing
-        {'model': 'AG MPRA', 'regime': 'Probing', 'cell_type': 'HepG2', 'pearson_r': 0.882},
-        {'model': 'AG MPRA', 'regime': 'Probing', 'cell_type': 'K562', 'pearson_r': 0.873},
-        {'model': 'AG MPRA', 'regime': 'Probing', 'cell_type': 'WTC11', 'pearson_r': 0.821},
+        {'model': 'AG MPRA', 'regime': 'Probing', 'cell_type': 'HepG2', 'pearson_r': 0.864},
+        {'model': 'AG MPRA', 'regime': 'Probing', 'cell_type': 'K562', 'pearson_r': 0.853},
+        {'model': 'AG MPRA', 'regime': 'Probing', 'cell_type': 'WTC11', 'pearson_r': 0.829},
         # AlphaGenome Fine-tuned
-        {'model': 'AG MPRA', 'regime': 'Fine-tuned', 'cell_type': 'HepG2', 'pearson_r': 0.885},
-        {'model': 'AG MPRA', 'regime': 'Fine-tuned', 'cell_type': 'K562', 'pearson_r': 0.877},
-        {'model': 'AG MPRA', 'regime': 'Fine-tuned', 'cell_type': 'WTC11', 'pearson_r': 0.822},
+        {'model': 'AG MPRA', 'regime': 'Fine-tuned', 'cell_type': 'HepG2', 'pearson_r': 0.887},
+        {'model': 'AG MPRA', 'regime': 'Fine-tuned', 'cell_type': 'K562', 'pearson_r': 0.879},
+        {'model': 'AG MPRA', 'regime': 'Fine-tuned', 'cell_type': 'WTC11', 'pearson_r': 0.839},
     ]
     
     df = pd.DataFrame(data)
@@ -89,10 +89,10 @@ def load_starrseq_data():
         {'model': 'Enf. MPRA', 'regime': 'Fine-tuned', 'promoter_type': 'Developmental', 'pearson_r': 0.678},
         {'model': 'Enf. MPRA', 'regime': 'Fine-tuned', 'promoter_type': 'House-keeping', 'pearson_r': 0.739},
         # AlphaGenome Probing
-        {'model': 'AG MPRA', 'regime': 'Probing', 'promoter_type': 'Developmental', 'pearson_r': 0.741},
-        {'model': 'AG MPRA', 'regime': 'Probing', 'promoter_type': 'House-keeping', 'pearson_r': 0.797},
+        {'model': 'AG MPRA', 'regime': 'Probing', 'promoter_type': 'Developmental', 'pearson_r': 0.620},
+        {'model': 'AG MPRA', 'regime': 'Probing', 'promoter_type': 'House-keeping', 'pearson_r': 0.631},
         # AlphaGenome Fine-tuned
-        {'model': 'AG MPRA', 'regime': 'Fine-tuned', 'promoter_type': 'Developmental', 'pearson_r': 0.741},
+        {'model': 'AG MPRA', 'regime': 'Fine-tuned', 'promoter_type': 'Developmental', 'pearson_r': 0.739},
         {'model': 'AG MPRA', 'regime': 'Fine-tuned', 'promoter_type': 'House-keeping', 'pearson_r': 0.8},
     ]
     

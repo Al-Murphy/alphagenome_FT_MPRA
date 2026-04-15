@@ -69,6 +69,30 @@ from alphagenome_ft_mpra import DeepSTARRHead, DeepSTARRDataset, STARRSeqDataLoa
 
 _PREDICT_REQUESTED_OUTPUTS: tuple = tuple(dna_output.OutputType)
 
+# DNA length passed to ``create_model_with_custom_heads(..., init_seq_len=...)`` for DeepSTARR
+# with flatten pooling (no cached embeddings). Must match ``finetune_starrseq.py`` (249 + 51).
+DEEPSTARR_FLATTEN_INIT_SEQ_LEN_BP = 249 + 51
+
+
+def resolve_checkpoint_dir(path: Path) -> Path:
+    """Return a directory that contains ``config.json`` (and typically ``checkpoint/``).
+
+    Training layouts often nest the Orbax bundle under ``stage1/`` or ``stage2/`` while the
+    parent run folder has no ``config.json``. Accept the parent path and resolve to the
+    inner directory automatically.
+    """
+    path = path.resolve()
+    if (path / 'config.json').exists():
+        return path
+    for sub in ('stage2', 'stage1'):
+        cand = path / sub
+        if (cand / 'config.json').exists():
+            return cand
+    for child in sorted(path.iterdir()):
+        if child.is_dir() and (child / 'config.json').exists():
+            return child
+    return path
+
 
 def get_predictions_for_saving(
     model,
@@ -384,11 +408,20 @@ def main():
              'If provided, the base model will be loaded from this path '
              'instead of using Kaggle.'
     )
-    
+    parser.add_argument(
+        '--init_seq_len',
+        type=int,
+        default=None,
+        help='For flatten pooling only: bp length used to build the Orbax restore template '
+             f'(default {DEEPSTARR_FLATTEN_INIT_SEQ_LEN_BP}, matching finetune_starrseq.py). '
+             'Override if the checkpoint was trained with cached embeddings '
+             '(use num_encoder_positions * 128 from the cache).',
+    )
+
     args = parser.parse_args()
     
-    # Resolve checkpoint directory to an absolute path for Orbax
-    checkpoint_dir = Path(args.checkpoint_dir).resolve()
+    # Resolve checkpoint directory to an absolute path for Orbax (handles stage1/stage2)
+    checkpoint_dir = resolve_checkpoint_dir(Path(args.checkpoint_dir))
     base_checkpoint_path = args.base_checkpoint_path
     
     print("=" * 80)
@@ -437,16 +470,20 @@ def main():
         ),
     )
     
-    # For flatten pooling, we need to determine the correct init_seq_len from
-    # the checkpoint's metadata. This ensures the model head is initialized
-    # with the same input size as during training.
-    init_seq_len = None  # Default: let model decide
-    
+    # Encoder / restore template length must match finetune_starrseq.py, not center_bp.
+    # center_bp is head pooling metadata; training uses init_seq_len=249+51 for flatten.
+    init_seq_len = None
     if head_metadata.get('pooling_type') == 'flatten':
-        # For flatten pooling, use center_bp from metadata as init_seq_len
-        # This matches how the training script initializes the model
-        init_seq_len = head_metadata.get('center_bp', 256)
-        print(f"Flatten pooling detected, using init_seq_len={init_seq_len}bp from center_bp")
+        if args.init_seq_len is not None:
+            init_seq_len = args.init_seq_len
+            print(f"Flatten pooling: init_seq_len={init_seq_len} bp (--init_seq_len)")
+        else:
+            init_seq_len = DEEPSTARR_FLATTEN_INIT_SEQ_LEN_BP
+            print(
+                f"Flatten pooling: init_seq_len={init_seq_len} bp "
+                f"(matches finetune_starrseq.py; center_bp={head_metadata.get('center_bp')} "
+                "is for the head only)"
+            )
     
     # Load trained model using load_checkpoint (now handles minimal models correctly)
     print("\nLoading trained model...")

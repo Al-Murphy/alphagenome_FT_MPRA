@@ -154,6 +154,8 @@ STAGE1_HYPERPARAMETER_COMBINATIONS = [
     {'nl_size': '256,256', 'job_suffix': 'nl-256-256'},
     {'nl_size': '512,256', 'job_suffix': 'nl-512-256'},
     {'nl_size': '512', 'job_suffix': 'nl-512'},
+    {'nl_size': '1024', 'job_suffix': 'nl-1024'},
+    {'nl_size': '2048', 'job_suffix': 'nl-2048'},
     {'nl_size': '256', 'job_suffix': 'nl-256'},
     {'nl_size': '128', 'job_suffix': 'nl-128'},
     
