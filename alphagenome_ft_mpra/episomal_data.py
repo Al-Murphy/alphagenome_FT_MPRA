@@ -204,10 +204,12 @@ class EpisomalMPRADatasetPyTorch:
             start = (len(seq) - SEQUENCE_LENGTH) // 2
             seq = seq[start:start + SEQUENCE_LENGTH]
 
-        # Optional N-padding
+        # Optional N-padding (asymmetric for odd totals so the full pad_n_bases
+        # is added, matching the call signature in test_episomal_mpra.py).
         if self.pad_n_bases > 0:
-            p = self.pad_n_bases // 2
-            seq = "N" * p + seq + "N" * p
+            left = self.pad_n_bases // 2
+            right = self.pad_n_bases - left
+            seq = "N" * left + seq + "N" * right
 
         # One-hot encode
         ohe = _one_hot_encode(seq)
@@ -323,10 +325,12 @@ class EpisomalMPRADataset:
             start = (len(seq) - SEQUENCE_LENGTH) // 2
             seq = seq[start:start + SEQUENCE_LENGTH]
 
-        # Optional N-padding
+        # Optional N-padding (asymmetric for odd totals so the full pad_n_bases
+        # is added, matching the call signature in test_episomal_mpra.py).
         if self.pad_n_bases > 0:
-            p = self.pad_n_bases // 2
-            seq = "N" * p + seq + "N" * p
+            left = self.pad_n_bases // 2
+            right = self.pad_n_bases - left
+            seq = "N" * left + seq + "N" * right
 
         # Random shift
         if self.random_shift:

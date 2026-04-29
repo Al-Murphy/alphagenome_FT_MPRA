@@ -92,6 +92,33 @@ def test_chromosome_split_sizes(cell_type):
         assert not (set(train["chromosome"].unique()) & VAL_CHROMOSOMES)
 
 
+def test_pad_n_bases_full_total_for_odd_padding():
+    """Padding by an odd amount (e.g. 81 → 200bp + 81bp = 281bp) must add
+    the full pad_n_bases, asymmetrically split. Earlier code split as
+    `p = pad // 2` on each side, which dropped 1 base for odd pads."""
+    with tempfile.TemporaryDirectory() as tmp:
+        rng = np.random.default_rng(0)
+        rows = [{
+            "IDs": "chr1:1:A:T:ref:wc",
+            "sequence": "".join(rng.choice(list("ACGT"), size=SEQUENCE_LENGTH)),
+            "K562_log2FC": 0.0, "HepG2_log2FC": 0.0, "SKNSH_log2FC": 0.0,
+        }]
+        pd.DataFrame(rows).to_csv(
+            os.path.join(tmp, DATA_FILENAME), sep="\t", index=False,
+        )
+
+        for pad in (0, 80, 81, 82):
+            ds = EpisomalMPRADatasetPyTorch(
+                path_to_data=tmp,
+                cell_type="K562",
+                split="train",
+                pad_n_bases=pad,
+            )
+            sample = ds[0]
+            assert sample["seq"].shape == (SEQUENCE_LENGTH + pad, 4), \
+                f"pad={pad}: expected length {SEQUENCE_LENGTH + pad}, got {sample['seq'].shape[0]}"
+
+
 def test_chr_column_takes_precedence_over_ids():
     """Real Gosai TSV ships a dedicated 'chr' column with bare digits and IDs
     in 'chr:pos:ref:alt:wc' form (5th token is the alt allele, not an
