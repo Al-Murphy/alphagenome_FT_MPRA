@@ -213,6 +213,12 @@ python scripts/finetune_episomal_mpra.py --config configs/episomal_K562.json
 
 # Enformer with episomal MPRA (Gosai 2024)
 python scripts/finetune_enformer_episomal_mpra.py --config configs/episomal_K562.json
+
+# 7-model comparison bar plot across K562/HepG2/SK-N-SH
+# (genomic-reference, high-activity-designed, SNV-effects test sets)
+python scripts/plot_episomal_benchmark_results.py \
+    --metrics_dir results/episomal_predictions \
+    --output_dir results/plots --output_name episomal_bar
 ```
 
 ## Datasets
