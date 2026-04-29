@@ -92,24 +92,24 @@ def _load_gosai_data(
     label_col = CELL_TYPE_LABEL_COLUMNS[cell_type]
 
     # Load data
-    df = pd.read_csv(filepath, sep="\t")
+    df = pd.read_csv(filepath, sep="\t", low_memory=False)
 
-    # Extract chromosome from IDs
-    df["chromosome"] = df["IDs"].apply(_parse_chromosome)
+    # Resolve chromosome: prefer a dedicated 'chr' column (Gosai schema), and
+    # fall back to parsing the leading token of the IDs column for archives
+    # that ship only the IDs.
+    if "chr" in df.columns:
+        df["chromosome"] = df["chr"].astype(str).apply(
+            lambda c: c if c.startswith("chr") else f"chr{c}"
+        )
+    elif "IDs" in df.columns:
+        df["chromosome"] = df["IDs"].apply(_parse_chromosome)
+    else:
+        raise ValueError(
+            "Gosai TSV must have either a 'chr' column or parseable 'IDs'"
+        )
 
     # Filter: must have valid chromosome and non-null label
     df = df.dropna(subset=["chromosome", label_col, "sequence"])
-
-    # Filter to reference alleles only (exclude alt alleles for main splits)
-    # Reference alleles have allele_type field containing "ref" in the ID
-    if "IDs" in df.columns:
-        # Parse allele type from ID: chr:pos:ref:alt:allele_type:wc
-        def _is_reference(id_str):
-            parts = str(id_str).split(":")
-            if len(parts) >= 5:
-                return parts[4] in ("ref", "reference", "wc")
-            return True  # If can't parse, include
-        df = df[df["IDs"].apply(_is_reference)]
 
     # Filter by sequence length (must be >= 198bp)
     df = df[df["sequence"].str.len() >= 198]
