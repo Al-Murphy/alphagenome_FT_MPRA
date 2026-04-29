@@ -1,15 +1,23 @@
 #!/usr/bin/env python3
 """Generate bar plots comparing models on the Gosai episomal MPRA benchmark.
 
-Layout: one panel per test set (Reference, Designed, SNV) showing 6 models × 3
-cell types (K562, HepG2, SK-N-SH). Pearson correlation on the y-axis. Errorbars
-across seeds when multiple seeds are available.
+Two layouts (selected with ``--style``):
+
+* ``cell_averaged`` (default) — one panel, three test-set groups, one bar per
+  model with sample-size-weighted average across cells. Mirrors the lentiMPRA
+  / STARR-seq panels in the paper.
+* ``per_cell`` — one panel per test set, one group per cell type, models
+  side-by-side. Useful when the per-cell breakdown matters.
 
 Inputs (any one of the following):
   --results_csv PATH   Pre-aggregated CSV with columns
-                        [model, regime, cell_type, test_set, pearson_r, seed]
+                        [model, regime, cell_type, test_set, pearson_r, seed,
+                         (n_samples)]
   --metrics_dir DIR    Directory of *_metrics.json files written by
                         test_episomal_mpra.py (one JSON per checkpoint).
+  --bar_final_root DIR Optional ALBench-S2F-style ``bar_final/`` tree for the
+                        baseline + AG models — combined with ``--metrics_dir``
+                        for the Enformer numbers.
   Defaults: built-in placeholder values so the script runs end-to-end.
 """
 
@@ -24,12 +32,28 @@ import pandas as pd
 import seaborn as sns
 
 
-# Shared palette across the repo (matches plot_benchmark_results.py)
-PALETTE = ["#A65141", "#E7CDC2", "#80A0C7", "#394165", "#B1934A", "#DCA258",
-           "#100F14", "#8B9DAF", "#EEDA9D", "#E8DCCF"]
+# Color palette shared with the lentiMPRA / STARR-seq panels in the paper, so
+# Enformer/AlphaGenome bars look the same across all three benchmarks.
+# Malinois reuses the DeepSTARR baseline color (#E8DCCF) at Alan's request.
+MODEL_COLORS = {
+    "MPRALegNet":               "#E8DCCF",   # baseline cream (lentiMPRA)
+    "DREAM-RNN":                "#8B9DAF",   # blue-gray (STARR-seq baseline)
+    "Malinois":                 "#E8DCCF",   # same as DeepSTARR baseline
+    "Enf. MPRA (Probing)":      "#E7CDC2",   # light salmon
+    "Enf. MPRA (Fine-tuned)":   "#A65141",   # terracotta
+    "AG MPRA (Probing)":        "#80A0C7",   # steel blue
+    "AG MPRA (Fine-tuned)":     "#394165",   # navy
+}
 
+# Darker text annotations on light-colored bars so the value labels stay legible.
+TEXT_COLORS = {
+    "#E8DCCF": "#8B7D6B",
+    "#E7CDC2": "#8B6B61",
+    "#8B9DAF": "#5A6A7A",
+}
 
-# 6-model schema for the episomal benchmark.
+# Per-cell layout uses all 7 models. The cell-averaged layout drops MPRALegNet
+# because it shares a color with Malinois (per Alan's color-collision rule).
 MODEL_ORDER = [
     "MPRALegNet",
     "DREAM-RNN",
@@ -39,17 +63,14 @@ MODEL_ORDER = [
     "AG MPRA (Probing)",
     "AG MPRA (Fine-tuned)",
 ]
-
-# Color assignments mirror the lentiMPRA plot so the paper has a consistent legend.
-MODEL_COLORS = {
-    "MPRALegNet":               PALETTE[9],   # #E8DCCF
-    "DREAM-RNN":                PALETTE[7],   # #8B9DAF
-    "Malinois":                 PALETTE[1],   # #E7CDC2 (light salmon — distinct from Enf. probing)
-    "Enf. MPRA (Probing)":      PALETTE[5],   # #DCA258 (gold) so it stays separable from Malinois
-    "Enf. MPRA (Fine-tuned)":   PALETTE[0],   # #A65141
-    "AG MPRA (Probing)":        PALETTE[2],   # #80A0C7
-    "AG MPRA (Fine-tuned)":     PALETTE[3],   # #394165
-}
+MODEL_ORDER_CELL_AVG = [
+    "DREAM-RNN",
+    "Malinois",
+    "Enf. MPRA (Probing)",
+    "Enf. MPRA (Fine-tuned)",
+    "AG MPRA (Probing)",
+    "AG MPRA (Fine-tuned)",
+]
 
 CELL_ORDER = ["K562", "HepG2", "SKNSH"]
 CELL_LABELS = {"K562": "K562", "HepG2": "HepG2", "SKNSH": "SK-N-SH"}
@@ -108,6 +129,7 @@ def load_results_from_metrics_dir(path: Path) -> pd.DataFrame:
                 "cell_type": cell_type,
                 "test_set": ts,
                 "pearson_r": m.get("pearson", float("nan")),
+                "n_samples": int(m.get("n_samples", 0)) or 0,
                 "seed": seed,
                 "source_file": str(jf.name),
             })
@@ -142,14 +164,19 @@ DEFAULT_BAR_FINAL_MODELS = {
 def _flat_metrics_to_rows(model: str, cell: str, seed, tm: dict) -> list[dict]:
     """Map the four expected metric keys onto the plot's three test sets."""
     out = []
-    in_dist = (tm.get("in_dist") or tm.get("in_distribution") or {}).get("pearson_r")
-    ood = (tm.get("ood") or {}).get("pearson_r")
-    snv_delta = (tm.get("snv_delta") or {}).get("pearson_r")
-    for ts, val in (("reference", in_dist), ("designed", ood), ("snv", snv_delta)):
+    sources = {
+        "reference": tm.get("in_dist") or tm.get("in_distribution") or {},
+        "designed":  tm.get("ood") or {},
+        "snv":       tm.get("snv_delta") or {},
+    }
+    for ts, m in sources.items():
+        val = m.get("pearson_r")
         if val is None or (isinstance(val, float) and np.isnan(val)):
             continue
         out.append({"model": model, "cell_type": cell, "test_set": ts,
-                    "pearson_r": float(val), "seed": seed})
+                    "pearson_r": float(val),
+                    "n_samples": int(m.get("n", 0)) or 0,
+                    "seed": seed})
     return out
 
 
@@ -277,6 +304,103 @@ def plot_episomal_benchmark(df: pd.DataFrame, figsize=(18, 5)):
     return fig
 
 
+# ── Cell-averaged single-panel plot (lentiMPRA / STARR-seq style) ────────
+#
+# Bar height  = sample-size-weighted average of per-(cell, seed) Pearson r
+#               (weight = n_samples for that cell's test set).
+# Error bar   = sample-size-weighted standard deviation across the same set.
+#
+# Drops MPRALegNet by default because it shares a color with Malinois in the
+# repo's palette.
+
+CELL_AVG_GROUP_KEYS = ["reference", "snv", "designed"]
+CELL_AVG_GROUP_LABELS = [
+    "Genomic Reference\nSequences",
+    "SNV Effects",
+    "High-Activity\nDesigned Sequences",
+]
+
+
+def _weighted_stats(values: np.ndarray, weights: np.ndarray) -> tuple[float, float]:
+    """Sample-size-weighted mean + Cochran-style reliability-weighted SD."""
+    if len(values) == 0:
+        return float("nan"), float("nan")
+    w = weights.astype(float)
+    if w.sum() == 0:
+        w = np.ones_like(w)
+    wm = float((values * w).sum() / w.sum())
+    if len(values) > 1:
+        denom = w.sum() - (w ** 2).sum() / w.sum()
+        wsd = float(np.sqrt((w * (values - wm) ** 2).sum() / denom)) if denom > 0 else 0.0
+    else:
+        wsd = 0.0
+    return wm, wsd
+
+
+def plot_episomal_cell_averaged(df: pd.DataFrame, figsize=(9, 6),
+                                 ylim=(0.0, 1.0),
+                                 model_order=None) -> plt.Figure:
+    """Single-panel cell-averaged bar plot (matches the lentiMPRA / STARR-seq
+    panel style: 3 test-set groups × 6 model bars per group)."""
+    setup_plot_style()
+    if model_order is None:
+        model_order = MODEL_ORDER_CELL_AVG
+    model_order = [m for m in model_order if m in set(df["model"])]
+    n_models = len(model_order)
+    n_groups = len(CELL_AVG_GROUP_KEYS)
+    width = 0.13
+    x = np.arange(n_groups)
+
+    fig, ax = plt.subplots(figsize=figsize)
+    has_n_samples = "n_samples" in df.columns
+    for i, model in enumerate(model_order):
+        color = MODEL_COLORS.get(model, "#888888")
+        means, stds = [], []
+        for ts in CELL_AVG_GROUP_KEYS:
+            sub = df[(df["model"] == model) & (df["test_set"] == ts)]
+            if sub.empty:
+                means.append(0.0); stds.append(0.0)
+                continue
+            vals = sub["pearson_r"].to_numpy(dtype=float)
+            wts = (sub["n_samples"].to_numpy(dtype=float)
+                   if has_n_samples else np.ones(len(vals)))
+            if (wts == 0).all():
+                wts = np.ones_like(wts)
+            wm, wsd = _weighted_stats(vals, wts)
+            means.append(wm if wm == wm else 0.0)
+            stds.append(wsd if wsd == wsd else 0.0)
+
+        offset = (i - n_models / 2) * width + width / 2
+        bars = ax.bar(
+            x + offset, means, width,
+            yerr=[s if s > 0 else 0 for s in stds],
+            capsize=3, label=model, color=color,
+            edgecolor="black", linewidth=1, alpha=0.9,
+        )
+        txt_color = TEXT_COLORS.get(color, color)
+        for rect, val, err in zip(bars, means, stds):
+            if val > 0:
+                cx = rect.get_x() + rect.get_width() / 2.0
+                ax.annotate(f"{val:.3f}", xy=(cx, val + err),
+                            xytext=(0, 3), textcoords="offset points",
+                            ha="center", va="bottom",
+                            fontsize=9, fontweight="bold", rotation=90,
+                            color=txt_color)
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(CELL_AVG_GROUP_LABELS)
+    ax.set_ylabel("Pearson Correlation")
+    ax.set_ylim(ylim)
+    ax.set_title("Episomal MPRA", fontsize=14)
+    ax.yaxis.grid(alpha=0.5, linestyle="--")
+    ax.set_axisbelow(True)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.legend(loc="upper right", frameon=False, fontsize=9, ncol=2)
+    fig.tight_layout()
+    return fig
+
+
 def save_plots(fig, out_path: Path, dpi=1200, formats=("pdf", "png")):
     out_path.parent.mkdir(parents=True, exist_ok=True)
     saved = []
@@ -317,11 +441,19 @@ def main():
                         default="results/comparison_tables/plots/episomal")
     parser.add_argument("--output_name", type=str,
                         default="episomal_benchmark")
+    parser.add_argument("--style", type=str, default="cell_averaged",
+                        choices=["cell_averaged", "per_cell"],
+                        help="Plot layout. 'cell_averaged' = single panel, "
+                             "3 test-set groups, sample-size-weighted average "
+                             "across cells (matches lentiMPRA / STARR-seq plots). "
+                             "'per_cell' = one panel per test set, cells on x-axis.")
     parser.add_argument("--dpi", type=int, default=1200)
     parser.add_argument("--formats", type=str, nargs="+",
                         default=["pdf", "png"], choices=["pdf", "png", "svg"])
     parser.add_argument("--figsize", type=float, nargs=2,
-                        default=[18, 5], metavar=("WIDTH", "HEIGHT"))
+                        default=None, metavar=("WIDTH", "HEIGHT"),
+                        help="Override figure size. Default: (9, 6) for "
+                             "cell_averaged, (18, 5) for per_cell.")
     args = parser.parse_args()
 
     frames = []
@@ -346,7 +478,12 @@ def main():
           f"{df['cell_type'].nunique()} cell types, "
           f"{df['test_set'].nunique()} test sets.")
 
-    fig = plot_episomal_benchmark(df, figsize=tuple(args.figsize))
+    if args.style == "cell_averaged":
+        figsize = tuple(args.figsize) if args.figsize else (9, 6)
+        fig = plot_episomal_cell_averaged(df, figsize=figsize)
+    else:
+        figsize = tuple(args.figsize) if args.figsize else (18, 5)
+        fig = plot_episomal_benchmark(df, figsize=figsize)
     out_path = Path(args.output_dir) / args.output_name
     save_plots(fig, out_path, dpi=args.dpi, formats=tuple(args.formats))
     plt.close(fig)
