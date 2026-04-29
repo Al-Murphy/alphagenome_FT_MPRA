@@ -92,6 +92,43 @@ def test_chromosome_split_sizes(cell_type):
         assert not (set(train["chromosome"].unique()) & VAL_CHROMOSOMES)
 
 
+def test_chr_column_takes_precedence_over_ids():
+    """Real Gosai TSV ships a dedicated 'chr' column with bare digits and IDs
+    in 'chr:pos:ref:alt:wc' form (5th token is the alt allele, not an
+    allele-type tag). _load_gosai_data must prefer the 'chr' column and
+    prepend 'chr' as needed, rather than parsing IDs."""
+    with tempfile.TemporaryDirectory() as tmp:
+        # Bare-digit chr values (matches real Gosai TSV); IDs without 'chr' prefix
+        rows = [
+            {"IDs": "7:100:G:T:wC", "chr": "7", "sequence": "A" * 200,
+             "K562_log2FC": 0.5, "HepG2_log2FC": 0.0, "SKNSH_log2FC": 0.0},
+            {"IDs": "13:200:G:T:wC", "chr": "13", "sequence": "C" * 200,
+             "K562_log2FC": 0.6, "HepG2_log2FC": 0.0, "SKNSH_log2FC": 0.0},
+            {"IDs": "1:300:G:T:wC", "chr": "1", "sequence": "G" * 200,
+             "K562_log2FC": 0.7, "HepG2_log2FC": 0.0, "SKNSH_log2FC": 0.0},
+            {"IDs": "X:400:G:T:wC", "chr": "X", "sequence": "T" * 200,
+             "K562_log2FC": 0.8, "HepG2_log2FC": 0.0, "SKNSH_log2FC": 0.0},
+        ]
+        pd.DataFrame(rows).to_csv(
+            os.path.join(tmp, DATA_FILENAME), sep="\t", index=False
+        )
+
+        train = _load_gosai_data(tmp, "K562", "train")
+        val = _load_gosai_data(tmp, "K562", "val")
+        test = _load_gosai_data(tmp, "K562", "test")
+
+        # chr 7 + chr 13 → test; chr X → val; chr 1 → train
+        assert set(test["chromosome"].unique()) == {"chr7", "chr13"}
+        assert set(val["chromosome"].unique()) == {"chrX"}
+        assert set(train["chromosome"].unique()) == {"chr1"}
+        # Chromosomes were inferred from the 'chr' column, NOT by parsing IDs
+        # (which lack the 'chr' prefix) — so no rows would have survived if
+        # the IDs path were taken instead.
+        assert len(train) == 1
+        assert len(val) == 1
+        assert len(test) == 2
+
+
 def test_pytorch_dataset_round_trip():
     with tempfile.TemporaryDirectory() as tmp:
         _write_synthetic_gosai(tmp, n_per_chrom=10)
