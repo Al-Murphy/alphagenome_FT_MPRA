@@ -27,6 +27,24 @@ import os
 import pandas as pd
 import numpy as np
 
+# Side-load helpers from episomal_utils.py.
+# Relative import works when this module is imported as part of the
+# ``alphagenome_ft_mpra`` package. ``finetune_enformer_episomal_mpra.py``
+# direct-loads ``enf_utils.py`` via ``importlib.util.spec_from_file_location``
+# (to keep the Enformer path JAX-free, sidestepping ``__init__.py``); in that
+# case there is no parent package so the relative import fails — fall back to
+# direct-loading ``episomal_utils.py`` from this file's directory.
+try:
+    from . import episomal_utils as _episomal_utils
+except ImportError:
+    import importlib.util as _ilu
+    _spec = _ilu.spec_from_file_location(
+        "episomal_utils",
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "episomal_utils.py"),
+    )
+    _episomal_utils = _ilu.module_from_spec(_spec)
+    _spec.loader.exec_module(_episomal_utils)
+
 def exists(val):
     return val is not None
 
@@ -641,3 +659,83 @@ class DeepSTARRDatasetPyTorch:
             "seq": sequence_onehot,
             "y": labels,
         }
+
+# ── Episomal MPRA (Gosai et al. 2024) — PyTorch dataset ──────────────────────
+
+
+class EpisomalMPRADatasetPyTorch:
+    """PyTorch/numpy dataset for the Gosai 2024 episomal MPRA.
+
+    PyTorch counterpart of :class:`alphagenome_ft_mpra.data.EpisomalMPRADataset`,
+    kept here in ``enf_utils.py`` so the Enformer training path never has to
+    import JAX (mirroring the existing :class:`LentiMPRADatasetPyTorch` /
+    :class:`DeepSTARRDatasetPyTorch` placement).
+
+    Returns ``{'seq': ndarray(L, 4), 'y': float}`` — compatible with PyTorch
+    DataLoaders used by ``finetune_enformer_episomal_mpra.py``.
+    """
+
+    def __init__(
+        self,
+        model=None,  # accepted for API parity with LentiMPRADatasetPyTorch
+        path_to_data: str = "./data/gosai_episomal",
+        cell_type: str = "K562",
+        split: str = "train",
+        reverse_complement: bool = False,
+        reverse_complement_likelihood: float = 0.5,
+        random_shift: bool = False,
+        random_shift_likelihood: float = 0.5,
+        max_shift: int = 10,
+        pad_n_bases: int = 0,
+        subset_frac: float = 1.0,
+        seed: int = 42,
+    ):
+        assert cell_type in _episomal_utils.VALID_CELL_TYPES, (
+            f"cell_type must be one of {_episomal_utils.VALID_CELL_TYPES}"
+        )
+        assert split in _episomal_utils.VALID_SPLITS, (
+            f"split must be one of {_episomal_utils.VALID_SPLITS}"
+        )
+
+        self.cell_type = cell_type
+        self.split = split
+        self.reverse_complement = reverse_complement
+        self.reverse_complement_likelihood = reverse_complement_likelihood
+        self.random_shift = random_shift
+        self.random_shift_likelihood = random_shift_likelihood
+        self.max_shift = max_shift
+        self.pad_n_bases = pad_n_bases
+        self.rng = np.random.RandomState(seed)
+
+        self.data = _episomal_utils._load_gosai_data(path_to_data, cell_type, split)
+
+        if subset_frac < 1.0:
+            n = int(len(self.data) * subset_frac)
+            self.data = self.data.sample(n=n, random_state=self.rng).reset_index(drop=True)
+
+        print(f"Loaded {len(self.data)} episomal MPRA samples for {cell_type} {split}")
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        row = self.data.iloc[idx]
+        seq = _episomal_utils.standardize_to_sequence_length(str(row["sequence"]))
+        label = float(row["label"])
+
+        seq = _episomal_utils.pad_n_bases(seq, self.pad_n_bases)
+        ohe = _episomal_utils._one_hot_encode(seq)
+
+        if self.random_shift and self.rng.random() < self.random_shift_likelihood:
+            shift = self.rng.randint(-self.max_shift, self.max_shift + 1)
+            if shift != 0:
+                ohe = np.roll(ohe, shift, axis=0)
+                if shift > 0:
+                    ohe[:shift, :] = 0.25  # Fill rolled-in region with N
+                else:
+                    ohe[shift:, :] = 0.25
+
+        if self.reverse_complement and self.rng.random() < self.reverse_complement_likelihood:
+            ohe = _episomal_utils._reverse_complement_ohe(ohe)
+
+        return {"seq": ohe, "y": label}

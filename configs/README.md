@@ -9,6 +9,11 @@ This directory contains JSON configuration files with optimal hyperparameters fo
 - `mpra_K562.json` - Optimal hyperparameters for K562 cell line  
 - `mpra_WTC11.json` - Optimal hyperparameters for WTC11 cell line
 
+### Episomal MPRA Cell Lines (Gosai et al. 2024)
+- `episomal_K562.json`  - Optimal hyperparameters for K562
+- `episomal_HepG2.json` - Optimal hyperparameters for HepG2
+- `episomal_SKNSH.json` - Optimal hyperparameters for SK-N-SH
+
 ### DeepSTARR
 - `starrseq.json` - Optimal hyperparameters for DeepSTARR dataset
 
