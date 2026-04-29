@@ -114,6 +114,73 @@ def load_results_from_metrics_dir(path: Path) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+# ── Aggregator for ALBench-S2F-style bar_final/ result.json files ───────────
+#
+# Each baseline model in the bar_final layout writes:
+#   bar_final/{cell}/{model_subdir}/seed_*/.../result.json
+# with two flavours of test_metrics:
+#   • flat:        {"in_dist": {...}, "ood": {...}, "snv_abs": {...}, "snv_delta": {...}}
+#   • multitask:   {"k562": {...flat...}, "hepg2": {...}, "sknsh": {...}}     (e.g. Malinois)
+# The flat case applies to LegNet, DREAM-RNN, AG S1/S2, etc.
+# The multitask case nests metrics under the cell key.
+
+# subdir name → display label used in the bar plot
+DEFAULT_BAR_FINAL_MODELS = {
+    "legnet": "MPRALegNet",
+    "dream_rnn": "DREAM-RNN",
+    "malinois_paper": "Malinois",
+    "ag_s1_pred": "AG MPRA (Probing)",
+    "ag_s2_real_labels": "AG MPRA (Fine-tuned)",
+}
+
+
+def _flat_metrics_to_rows(model: str, cell: str, seed, tm: dict) -> list[dict]:
+    """Map the four expected metric keys onto the plot's three test sets."""
+    out = []
+    in_dist = (tm.get("in_dist") or tm.get("in_distribution") or {}).get("pearson_r")
+    ood = (tm.get("ood") or {}).get("pearson_r")
+    snv_delta = (tm.get("snv_delta") or {}).get("pearson_r")
+    for ts, val in (("reference", in_dist), ("designed", ood), ("snv", snv_delta)):
+        if val is None or (isinstance(val, float) and np.isnan(val)):
+            continue
+        out.append({"model": model, "cell_type": cell, "test_set": ts,
+                    "pearson_r": float(val), "seed": seed})
+    return out
+
+
+def load_results_from_bar_final(
+    root: Path,
+    model_subdirs: dict[str, str] | None = None,
+) -> pd.DataFrame:
+    """Aggregate ALBench-S2F bar_final/ result.json files into the plot's schema.
+
+    Handles both the flat test_metrics layout (LegNet, DREAM-RNN, AG, …) and
+    the multitask nested-by-cell layout (Malinois) automatically.
+    """
+    model_subdirs = model_subdirs or DEFAULT_BAR_FINAL_MODELS
+    rows = []
+    cell_aliases = {"k562": "K562", "hepg2": "HepG2", "sknsh": "SKNSH"}
+    for cell_dir, cell_pretty in cell_aliases.items():
+        for subdir, label in model_subdirs.items():
+            for jf in sorted(
+                (root / cell_dir / subdir).rglob("result.json")
+            ):
+                try:
+                    data = json.loads(jf.read_text())
+                except json.JSONDecodeError:
+                    continue
+                seed_m = re.search(r"seed[_]?(\d+)", str(jf))
+                seed = int(seed_m.group(1)) if seed_m else data.get("seed", 0)
+                tm = data.get("test_metrics", {}) or {}
+                # Multitask: nested under cell-name keys.
+                if any(k in tm for k in ("k562", "hepg2", "sknsh")):
+                    nested = tm.get(cell_dir, {})
+                    rows.extend(_flat_metrics_to_rows(label, cell_pretty, seed, nested))
+                else:
+                    rows.extend(_flat_metrics_to_rows(label, cell_pretty, seed, tm))
+    return pd.DataFrame(rows)
+
+
 def placeholder_data() -> pd.DataFrame:
     """Reasonable placeholders so the script renders before real results land."""
     rows = []
@@ -232,6 +299,12 @@ def main():
     parser.add_argument("--results_csv", type=str, default=None,
                         help="Pre-aggregated CSV with columns "
                              "[model, cell_type, test_set, pearson_r, (seed)]")
+    parser.add_argument("--bar_final_root", type=str, default=None,
+                        help="Optional path to an ALBench-S2F-style 'bar_final/' "
+                             "directory whose result.json files will be aggregated "
+                             "for the baseline + AG models. Combine with "
+                             "--metrics_dir to pull Enformer FT_MPRA results from "
+                             "a separate location.")
     parser.add_argument("--metrics_dir", type=str, default=None,
                         help="Directory of *_metrics.json files from "
                              "test_episomal_mpra.py")
@@ -246,15 +319,22 @@ def main():
                         default=[18, 5], metavar=("WIDTH", "HEIGHT"))
     args = parser.parse_args()
 
+    frames = []
     if args.results_csv:
-        df = load_results_from_csv(Path(args.results_csv))
-    elif args.metrics_dir:
-        df = load_results_from_metrics_dir(Path(args.metrics_dir))
+        frames.append(load_results_from_csv(Path(args.results_csv)))
+    if args.bar_final_root:
+        frames.append(load_results_from_bar_final(Path(args.bar_final_root)))
+    if args.metrics_dir:
+        frames.append(load_results_from_metrics_dir(Path(args.metrics_dir)))
+
+    if frames:
+        df = pd.concat([f for f in frames if not f.empty], ignore_index=True)
         if df.empty:
-            print("WARNING: No metrics JSON files found — using placeholder data.")
+            print("WARNING: All input sources were empty — using placeholder data.")
             df = placeholder_data()
     else:
-        print("INFO: No --results_csv / --metrics_dir given — using placeholder data.")
+        print("INFO: No --results_csv / --bar_final_root / --metrics_dir given "
+              "— using placeholder data.")
         df = placeholder_data()
 
     print(f"Loaded {len(df)} rows across {df['model'].nunique()} models, "
