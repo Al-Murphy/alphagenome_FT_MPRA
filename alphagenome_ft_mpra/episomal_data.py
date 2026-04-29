@@ -392,8 +392,16 @@ def get_episomal_test_sets(
 
     # 2. High-activity designed sequences (OOD)
     # These are loaded from a separate test set file if available
-    designed_path = os.path.join(data_path, "test_sets", "test_ood_designed_k562.tsv")
-    if os.path.exists(designed_path):
+    # Per-cell designed test sets (test_ood_designed_{k562,hepg2,sknsh}.tsv).
+    # Fall back to the K562 file if the cell-specific one is missing — older
+    # data drops sometimes only shipped the K562 designed set.
+    cell_lower = cell_type.lower()
+    candidate_paths = [
+        os.path.join(data_path, "test_sets", f"test_ood_designed_{cell_lower}.tsv"),
+        os.path.join(data_path, "test_sets", "test_ood_designed_k562.tsv"),
+    ]
+    designed_path = next((p for p in candidate_paths if os.path.exists(p)), None)
+    if designed_path:
         designed_df = pd.read_csv(designed_path, sep="\t")
         label_col = CELL_TYPE_LABEL_COLUMNS.get(cell_type, "K562_log2FC")
         if label_col in designed_df.columns:
