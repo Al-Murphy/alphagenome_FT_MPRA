@@ -8,6 +8,11 @@ __version__ = "0.1.2"
 
 from .mpra_heads import MPRAHead, EncoderMPRAHead, DeepSTARRHead
 from .data import LentiMPRADataset, MPRADataLoader, DeepSTARRDataset, STARRSeqDataLoader
+from .episomal_data import (
+    EpisomalMPRADataset,
+    EpisomalMPRADatasetPyTorch,
+    get_episomal_test_sets,
+)
 from .oracle import MPRAOracle, load_oracle
 from .training import train, validate
 
@@ -20,6 +25,9 @@ __all__ = [
     'MPRADataLoader',
     'DeepSTARRDataset',
     'STARRSeqDataLoader',
+    'EpisomalMPRADataset',
+    'EpisomalMPRADatasetPyTorch',
+    'get_episomal_test_sets',
     'MPRAOracle',
     'load_oracle',
     'train',
