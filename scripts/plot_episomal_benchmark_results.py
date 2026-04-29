@@ -124,11 +124,14 @@ def load_results_from_metrics_dir(path: Path) -> pd.DataFrame:
 # The flat case applies to LegNet, DREAM-RNN, AG S1/S2, etc.
 # The multitask case nests metrics under the cell key.
 
-# subdir name → display label used in the bar plot
+# subdir name → display label used in the bar plot.
+# (Malinois has multiple training variants; chr_split is the one that
+# trained successfully on all three cells — the multitask 'malinois_paper'
+# variant has known degenerate HepG2/SKNSH metrics and should be avoided.)
 DEFAULT_BAR_FINAL_MODELS = {
     "legnet": "MPRALegNet",
     "dream_rnn": "DREAM-RNN",
-    "malinois_paper": "Malinois",
+    "malinois_chr_split": "Malinois",
     "ag_s1_pred": "AG MPRA (Probing)",
     "ag_s2_real_labels": "AG MPRA (Fine-tuned)",
 }
