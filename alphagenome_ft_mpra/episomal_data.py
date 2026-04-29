@@ -68,6 +68,21 @@ def _reverse_complement_ohe(ohe: np.ndarray) -> np.ndarray:
     return ohe[::-1, [3, 2, 1, 0]].copy()
 
 
+def pad_n_bases(seq: str, n: int) -> str:
+    """Add ``n`` 'N' bases as flanking padding around ``seq``.
+
+    For odd ``n`` the extra base goes on the right. This is the single
+    source of truth for padding so the training datasets and the inference
+    pipeline (test_episomal_mpra.py) cannot drift to give different
+    sequence lengths for the same ``pad_n_bases`` setting.
+    """
+    if n <= 0:
+        return seq
+    left = n // 2
+    right = n - left
+    return "N" * left + seq + "N" * right
+
+
 def _load_gosai_data(
     data_path: str,
     cell_type: str,
@@ -204,12 +219,8 @@ class EpisomalMPRADatasetPyTorch:
             start = (len(seq) - SEQUENCE_LENGTH) // 2
             seq = seq[start:start + SEQUENCE_LENGTH]
 
-        # Optional N-padding (asymmetric for odd totals so the full pad_n_bases
-        # is added, matching the call signature in test_episomal_mpra.py).
-        if self.pad_n_bases > 0:
-            left = self.pad_n_bases // 2
-            right = self.pad_n_bases - left
-            seq = "N" * left + seq + "N" * right
+        # Optional N-padding via shared helper (single source of truth).
+        seq = pad_n_bases(seq, self.pad_n_bases)
 
         # One-hot encode
         ohe = _one_hot_encode(seq)
@@ -325,12 +336,8 @@ class EpisomalMPRADataset:
             start = (len(seq) - SEQUENCE_LENGTH) // 2
             seq = seq[start:start + SEQUENCE_LENGTH]
 
-        # Optional N-padding (asymmetric for odd totals so the full pad_n_bases
-        # is added, matching the call signature in test_episomal_mpra.py).
-        if self.pad_n_bases > 0:
-            left = self.pad_n_bases // 2
-            right = self.pad_n_bases - left
-            seq = "N" * left + seq + "N" * right
+        # Optional N-padding via shared helper (single source of truth).
+        seq = pad_n_bases(seq, self.pad_n_bases)
 
         # Random shift
         if self.random_shift:

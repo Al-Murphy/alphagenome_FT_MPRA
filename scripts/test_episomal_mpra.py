@@ -26,6 +26,7 @@ from alphagenome_ft_mpra.episomal_data import (
     SEQUENCE_LENGTH,
     _load_gosai_data,
     _one_hot_encode,
+    pad_n_bases as _pad_n_bases,
     get_episomal_test_sets,
 )
 
@@ -198,23 +199,24 @@ def _enformer_predict_batch(model, sequences, pad_n_bases=81, batch_size=32, dev
 
     model = model.to(device)
     preds = []
-    target_len = SEQUENCE_LENGTH + pad_n_bases  # match training input length
+    target_len = SEQUENCE_LENGTH + pad_n_bases  # must match training input length
 
     with torch.no_grad():
         for i in range(0, len(sequences), batch_size):
             batch = sequences[i:i + batch_size]
             ohes = []
             for s in batch:
+                # Center-crop or center-pad to SEQUENCE_LENGTH.
                 if len(s) < SEQUENCE_LENGTH:
-                    pad = SEQUENCE_LENGTH - len(s)
-                    s = "N" * (pad // 2) + s + "N" * (pad - pad // 2)
+                    s = _pad_n_bases(s, SEQUENCE_LENGTH - len(s))
                 elif len(s) > SEQUENCE_LENGTH:
                     start = (len(s) - SEQUENCE_LENGTH) // 2
                     s = s[start:start + SEQUENCE_LENGTH]
-                if pad_n_bases > 0:
-                    p = pad_n_bases // 2
-                    s = "N" * p + s + "N" * (pad_n_bases - p)
-                # Truncate / pad to target_len defensively
+                # Then add the train-time pad_n_bases via the shared helper
+                # so train and inference cannot drift.
+                s = _pad_n_bases(s, pad_n_bases)
+                # Defensive truncate/pad to target_len in case upstream lied
+                # about input length.
                 if len(s) > target_len:
                     s = s[:target_len]
                 elif len(s) < target_len:

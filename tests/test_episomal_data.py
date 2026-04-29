@@ -20,6 +20,7 @@ from alphagenome_ft_mpra.episomal_data import (
     _parse_chromosome,
     _reverse_complement_ohe,
     get_episomal_test_sets,
+    pad_n_bases,
 )
 
 
@@ -90,6 +91,54 @@ def test_chromosome_split_sizes(cell_type):
         assert set(val["chromosome"].unique()) <= VAL_CHROMOSOMES
         assert not (set(train["chromosome"].unique()) & TEST_CHROMOSOMES)
         assert not (set(train["chromosome"].unique()) & VAL_CHROMOSOMES)
+
+
+def test_pad_n_bases_helper_returns_full_total():
+    """The shared pad_n_bases() helper must add exactly n bases for any n."""
+    seq = "A" * 50
+    for n in (0, 1, 2, 80, 81, 82):
+        out = pad_n_bases(seq, n)
+        assert len(out) == 50 + n, f"pad_n_bases(.., {n}) → len {len(out)}"
+        # Padding is N's only
+        if n > 0:
+            assert out[: n // 2] == "N" * (n // 2)
+            assert out[len(out) - (n - n // 2):] == "N" * (n - n // 2)
+        # Original sequence is intact in the middle
+        left = n // 2
+        assert out[left:left + len(seq)] == seq
+
+
+def test_reverse_complement_is_involution():
+    """RC(RC(x)) == x — guards the channel-swap and reversal logic."""
+    rng = np.random.default_rng(0)
+    seq = "".join(rng.choice(list("ACGT"), size=200))
+    ohe = _one_hot_encode(seq)
+    np.testing.assert_allclose(_reverse_complement_ohe(_reverse_complement_ohe(ohe)), ohe)
+
+
+def test_splits_are_disjoint_by_chromosome():
+    """Train / val / test chromosomes must not overlap."""
+    with tempfile.TemporaryDirectory() as tmp:
+        _write_synthetic_gosai(tmp, n_per_chrom=10)
+        chr_train = set(_load_gosai_data(tmp, "K562", "train")["chromosome"].unique())
+        chr_val = set(_load_gosai_data(tmp, "K562", "val")["chromosome"].unique())
+        chr_test = set(_load_gosai_data(tmp, "K562", "test")["chromosome"].unique())
+        assert chr_train & chr_val == set()
+        assert chr_train & chr_test == set()
+        assert chr_val & chr_test == set()
+
+
+def test_same_sequences_across_cells():
+    """All 3 cell types must see the same sequences in each split — only the
+    label column differs. Catches regressions where cell-specific filtering
+    (e.g. dropping rows with null cell labels) would diverge across cells."""
+    with tempfile.TemporaryDirectory() as tmp:
+        _write_synthetic_gosai(tmp, n_per_chrom=10)
+        for split in ("train", "val", "test"):
+            k = set(_load_gosai_data(tmp, "K562", split)["sequence"])
+            h = set(_load_gosai_data(tmp, "HepG2", split)["sequence"])
+            s = set(_load_gosai_data(tmp, "SKNSH", split)["sequence"])
+            assert k == h == s, f"{split} differs across cells"
 
 
 def test_pad_n_bases_full_total_for_odd_padding():
