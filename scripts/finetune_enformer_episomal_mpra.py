@@ -335,38 +335,48 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--num_workers", type=int, default=4)
 
-    args = parser.parse_args()
-
-    if args.config:
-        cfg = load_config(args.config)
+    # Two-pass parsing so config sets defaults but CLI args still override
+    # (matches the pattern in finetune_episomal_mpra.py / finetune_mpra.py).
+    temp_args, _ = parser.parse_known_args()
+    if temp_args.config:
+        cfg = load_config(temp_args.config)
         if "cell_type" in cfg:
-            args.cell_type = cfg["cell_type"]
+            parser.set_defaults(cell_type=cfg["cell_type"])
         if "data_path" in cfg:
-            args.data_path = cfg["data_path"]
+            parser.set_defaults(data_path=cfg["data_path"])
         if "data" in cfg:
             d = cfg["data"]
-            args.batch_size = d.get("batch_size", args.batch_size)
-            args.max_shift = d.get("max_shift", args.max_shift)
+            parser.set_defaults(
+                batch_size=d.get("batch_size"),
+                max_shift=d.get("max_shift"),
+            )
         if "training" in cfg:
             t = cfg["training"]
-            args.num_epochs = t.get("num_epochs", args.num_epochs)
-            args.learning_rate = t.get("learning_rate", args.learning_rate)
-            args.optimizer = t.get("optimizer", args.optimizer)
-            args.weight_decay = t.get("weight_decay", args.weight_decay)
-            args.gradient_clip = t.get("gradient_clip", args.gradient_clip)
-            args.lr_scheduler = t.get("lr_scheduler", args.lr_scheduler)
-            args.early_stopping_patience = t.get(
-                "early_stopping_patience", args.early_stopping_patience)
+            parser.set_defaults(
+                num_epochs=t.get("num_epochs"),
+                learning_rate=t.get("learning_rate"),
+                optimizer=t.get("optimizer"),
+                weight_decay=t.get("weight_decay"),
+                gradient_clip=t.get("gradient_clip"),
+                lr_scheduler=t.get("lr_scheduler"),
+                early_stopping_patience=t.get("early_stopping_patience"),
+            )
         if "two_stage" in cfg and cfg["two_stage"].get("enabled", False):
             ts = cfg["two_stage"]
-            args.second_stage_lr = ts.get("second_stage_lr", args.second_stage_lr)
-            args.second_stage_epochs = ts.get(
-                "second_stage_epochs", args.second_stage_epochs)
-        if "wandb" in cfg and not args.no_wandb:
+            parser.set_defaults(
+                second_stage_lr=ts.get("second_stage_lr"),
+                second_stage_epochs=ts.get("second_stage_epochs"),
+            )
+        if "wandb" in cfg:
             wb = cfg["wandb"]
-            args.wandb_project = wb.get("project", args.wandb_project)
-            if args.wandb_name is None:
-                args.wandb_name = wb.get("wandb_name", None)
+            parser.set_defaults(
+                no_wandb=not wb.get("enabled", True),
+                wandb_project=wb.get("project"),
+                wandb_name=wb.get("wandb_name"),
+            )
+
+    # Now parse with config-augmented defaults; CLI args override the config.
+    args = parser.parse_args()
 
     if args.wandb_name is None:
         args.wandb_name = f"enformer-episomal-{args.cell_type}-seed{args.seed}"
