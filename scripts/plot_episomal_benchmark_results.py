@@ -152,13 +152,22 @@ def load_results_from_metrics_dir(path: Path) -> pd.DataFrame:
 # — both 'malinois_paper' and 'malinois_chr_split' produced degenerate /
 # negative HepG2 + SKNSH numbers in their result.json files and should be
 # avoided.)
+# Fine-tuned AG uses ``ag_s2_warmstart`` rather than ``ag_s2_real_labels`` —
+# the warmstart variant initialises the Stage-2 head from the trained
+# Stage-1 head (instead of random init) and gets a ~3% higher in-distribution
+# Pearson at no extra cost. The warmstart runs save ``test_metrics.json``
+# whereas the older variants save ``result.json``; the loader handles both.
 DEFAULT_BAR_FINAL_MODELS = {
     "legnet": "MPRALegNet",
     "dream_rnn": "DREAM-RNN",
     "malinois": "Malinois",
     "ag_s1_pred": "AG MPRA (Probing)",
-    "ag_s2_real_labels": "AG MPRA (Fine-tuned)",
+    "ag_s2_warmstart": "AG MPRA (Fine-tuned)",
 }
+
+# Filenames the bar_final/ tree uses for per-seed metrics. Older runs save
+# ``result.json``; the AG S2 warmstart pipeline saves ``test_metrics.json``.
+BAR_FINAL_RESULT_FILES = ("result.json", "test_metrics.json")
 
 
 def _flat_metrics_to_rows(model: str, cell: str, seed, tm: dict) -> list[dict]:
@@ -194,9 +203,11 @@ def load_results_from_bar_final(
     cell_aliases = {"k562": "K562", "hepg2": "HepG2", "sknsh": "SKNSH"}
     for cell_dir, cell_pretty in cell_aliases.items():
         for subdir, label in model_subdirs.items():
-            for jf in sorted(
-                (root / cell_dir / subdir).rglob("result.json")
-            ):
+            base = root / cell_dir / subdir
+            metric_files = []
+            for fname in BAR_FINAL_RESULT_FILES:
+                metric_files.extend(base.rglob(fname))
+            for jf in sorted(metric_files):
                 try:
                     data = json.loads(jf.read_text())
                 except json.JSONDecodeError:
