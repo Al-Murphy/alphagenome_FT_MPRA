@@ -346,8 +346,8 @@ class EpisomalMPRADataset:
                 comp = {"A": "T", "T": "A", "C": "G", "G": "C", "N": "N"}
                 seq = "".join(comp.get(b, "N") for b in reversed(seq.upper()))
 
-        # Encode using AG one-hot encoder
-        ohe = self.model._one_hot_encoder.encode(seq, self.organism)
+        # Encode using AG one-hot encoder (matches LentiMPRADataset call signature).
+        ohe = self.model._one_hot_encoder.encode(seq)
 
         return {
             "seq": ohe,
