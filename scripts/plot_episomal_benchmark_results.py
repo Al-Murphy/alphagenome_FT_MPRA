@@ -125,13 +125,15 @@ def load_results_from_metrics_dir(path: Path) -> pd.DataFrame:
 # The multitask case nests metrics under the cell key.
 
 # subdir name → display label used in the bar plot.
-# (Malinois has multiple training variants; chr_split is the one that
-# trained successfully on all three cells — the multitask 'malinois_paper'
-# variant has known degenerate HepG2/SKNSH metrics and should be avoided.)
+# (Malinois has multiple training variants. The plain 'malinois' subdir is
+# the one that trained successfully on all three cells with positive metrics
+# — both 'malinois_paper' and 'malinois_chr_split' produced degenerate /
+# negative HepG2 + SKNSH numbers in their result.json files and should be
+# avoided.)
 DEFAULT_BAR_FINAL_MODELS = {
     "legnet": "MPRALegNet",
     "dream_rnn": "DREAM-RNN",
-    "malinois_chr_split": "Malinois",
+    "malinois": "Malinois",
     "ag_s1_pred": "AG MPRA (Probing)",
     "ag_s2_real_labels": "AG MPRA (Fine-tuned)",
 }
