@@ -3,8 +3,6 @@
   "_source": "Adapted from mpra_HepG2.json benchmark results",
 
   "cell_type": "HepG2",
-  "split_type": "chromosome",
-  "data_path": "./data/gosai_episomal",
 
   "data": {
     "batch_size": 64,

@@ -3,8 +3,6 @@
   "_source": "Adapted from mpra_K562.json benchmark results",
 
   "cell_type": "SKNSH",
-  "split_type": "chromosome",
-  "data_path": "./data/gosai_episomal",
 
   "data": {
     "batch_size": 64,
