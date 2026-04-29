@@ -226,7 +226,7 @@ drop it at the indicated path.
 | LentiMPRA (Agarwal et al. 2025) | `data/legnet_lentimpra/` | per-cell TSV files (`HepG2.tsv`, `K562.tsv`, `WTC11.tsv`) |
 | DeepSTARR (de Almeida et al. 2022) | `data/deepstarr/` | DeepSTARR genomic-context data |
 | CAGI5 saturation mutagenesis | `data/cagi5/` | use `scripts/fetch_cagi5_references.py` to fetch reference sequences |
-| **Episomal MPRA (Gosai et al. 2024)** | **`data/gosai_episomal/`** | **`DATA-Table_S2__MPRA_dataset.txt`** (main TSV; supplementary table from the Nature Genetics paper). Optional test sets at `data/gosai_episomal/test_sets/test_ood_designed_k562.tsv` and `data/gosai_episomal/test_sets/test_snv_pairs_hashfrag.tsv` enable the high-activity-designed and SNV-effects evaluations. |
+| **Episomal MPRA (Gosai et al. 2024)** | **`data/gosai_episomal/`** | **`DATA-Table_S2__MPRA_dataset.txt`** (main TSV; supplementary table from the Nature Genetics paper). Use `scripts/fetch_episomal_data.py` to download from the Tewhey-lab public bucket linked in the BODA2 README. Optional test sets at `data/gosai_episomal/test_sets/test_ood_designed_k562.tsv` and `data/gosai_episomal/test_sets/test_snv_pairs_hashfrag.tsv` enable the high-activity-designed and SNV-effects evaluations. |
 
 ## Project Structure
 
@@ -235,8 +235,8 @@ alphagenome_FT_MPRA/
 ├── alphagenome_ft_mpra/      # Source code
 │   ├── mpra_heads.py         # Custom prediction heads (MPRAHead, EncoderMPRAHead, DeepSTARRHead)
 │   ├── enf_utils.py          # Enformer-specific utilities and heads
-│   ├── data.py               # Data loading classes (LentiMPRADataset, DeepSTARRDataset)
-│   ├── episomal_data.py      # Episomal MPRA (Gosai 2024) dataset classes (JAX + PyTorch)
+│   ├── data.py               # JAX dataset classes (LentiMPRADataset, DeepSTARRDataset, EpisomalMPRADataset)
+│   ├── episomal_utils.py     # Shared helpers for the Gosai 2024 episomal MPRA (chr splits, padding, OHE)
 │   ├── seq_loader.py         # Sequence loading utilities
 │   ├── training.py           # Training utilities and helpers
 │   ├── oracle.py             # MPRA oracle loading + predict(onehot, mode=...) and predict_sequence(...)
@@ -246,6 +246,7 @@ alphagenome_FT_MPRA/
 │   ├── finetune_enformer_mpra.py  # Finetune Enformer on LentiMPRA
 │   ├── finetune_starrseq.py  # Finetune AlphaGenome on DeepSTARR
 │   ├── finetune_enformer_starrseq.py  # Finetune Enformer on DeepSTARR
+│   ├── fetch_episomal_data.py     # Download the Gosai 2024 MPRA table into data/gosai_episomal/
 │   ├── finetune_episomal_mpra.py  # Finetune AlphaGenome on episomal MPRA (Gosai 2024)
 │   ├── finetune_enformer_episomal_mpra.py  # Finetune Enformer on episomal MPRA
 │   ├── test_episomal_mpra.py  # Evaluate episomal MPRA models across 3 test sets

@@ -765,3 +765,118 @@ class STARRSeqDataLoader:
     def __len__(self):
         """Return number of batches."""
         return (len(self.dataset) + self.batch_size - 1) // self.batch_size
+
+# ── Episomal MPRA (Gosai et al. 2024) — JAX dataset ──────────────────────────
+
+
+class EpisomalMPRADataset:
+    """JAX dataset for the Gosai 2024 episomal MPRA.
+
+    Compatible with AlphaGenome training via ``alphagenome_ft``. Returns the
+    same ``{seq, y, organism_index}`` schema as :class:`LentiMPRADataset` so
+    :class:`MPRADataLoader` can batch it interchangeably.
+
+    Splits are chromosome-based (test=chr7+chr13, val=chr19+chr21+chrX,
+    train=remainder) — see :mod:`alphagenome_ft_mpra.episomal_utils` for
+    constants. The default ``path_to_data='./data/gosai_episomal'`` mirrors
+    the existing ``data/legnet_lentimpra`` / ``data/deepstarr`` layout.
+    """
+
+    def __init__(
+        self,
+        model: Any,
+        path_to_data: str = "./data/gosai_episomal",
+        cell_type: str = "K562",
+        split: str = "train",
+        random_shift: bool = False,
+        random_shift_likelihood: float = 0.5,
+        max_shift: int = 10,
+        reverse_complement: bool = False,
+        reverse_complement_likelihood: float = 0.5,
+        pad_n_bases: int = 0,
+        subset_frac: float = 1.0,
+        rng_key=None,
+        use_cached_embeddings: bool = False,
+        cache_file: str | None = None,
+    ):
+        from .episomal_utils import (
+            VALID_CELL_TYPES,
+            VALID_SPLITS,
+            _load_gosai_data,
+        )
+
+        assert cell_type in VALID_CELL_TYPES
+        assert split in VALID_SPLITS
+
+        self.model = model
+        self.cell_type = cell_type
+        self.split = split
+        self.organism = dna_model.Organism.HOMO_SAPIENS
+        self.pad_n_bases = pad_n_bases
+
+        if rng_key is None:
+            self.rng_key = jax.random.PRNGKey(42)
+        else:
+            self.rng_key = rng_key
+
+        self.reverse_complement = reverse_complement
+        self.reverse_complement_likelihood = reverse_complement_likelihood
+        self.random_shift = random_shift
+        self.random_shift_likelihood = random_shift_likelihood
+        self.max_shift = max_shift
+
+        self.data = _load_gosai_data(path_to_data, cell_type, split)
+
+        if subset_frac < 1.0:
+            n = int(len(self.data) * subset_frac)
+            self.data = self.data.sample(n=n).reset_index(drop=True)
+
+        print(f"Loaded {len(self.data)} episomal MPRA samples for {cell_type} {split}")
+
+        self.use_cached_embeddings = use_cached_embeddings
+        if use_cached_embeddings:
+            if random_shift or reverse_complement:
+                print("Warning: Augmentations disabled when using cached embeddings")
+                self.random_shift = False
+                self.reverse_complement = False
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        from .episomal_utils import (
+            pad_n_bases as _pad_n_bases,
+            standardize_to_sequence_length,
+        )
+
+        row = self.data.iloc[idx]
+        seq = standardize_to_sequence_length(str(row["sequence"]))
+        label = float(row["label"])
+
+        seq = _pad_n_bases(seq, self.pad_n_bases)
+
+        if self.random_shift:
+            self.rng_key, subkey = jax.random.split(self.rng_key)
+            if jax.random.uniform(subkey) < self.random_shift_likelihood:
+                self.rng_key, subkey2 = jax.random.split(self.rng_key)
+                shift = int(jax.random.randint(
+                    subkey2, (), -self.max_shift, self.max_shift + 1
+                ))
+                if shift > 0:
+                    seq = "N" * shift + seq[:-shift]
+                elif shift < 0:
+                    seq = seq[-shift:] + "N" * (-shift)
+
+        if self.reverse_complement:
+            self.rng_key, subkey = jax.random.split(self.rng_key)
+            if jax.random.uniform(subkey) < self.reverse_complement_likelihood:
+                comp = {"A": "T", "T": "A", "C": "G", "G": "C", "N": "N"}
+                seq = "".join(comp.get(b, "N") for b in reversed(seq.upper()))
+
+        ohe = self.model._one_hot_encoder.encode(seq)
+
+        return {
+            "seq": ohe,
+            "y": label,
+            "organism_index": jnp.array([0]),
+        }

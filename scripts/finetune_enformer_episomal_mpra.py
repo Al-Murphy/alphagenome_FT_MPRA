@@ -35,9 +35,11 @@ from pytorch_lightning.callbacks import (
 from pytorch_lightning.loggers import WandbLogger
 from torch.utils.data import DataLoader
 
-# Load enf_utils and episomal_data as modules (mirrors finetune_enformer_mpra.py).
-# Direct-loading sidesteps `alphagenome_ft_mpra/__init__.py`, which would otherwise
-# import JAX — keeping the Enformer training path PyTorch-only.
+# Direct-load enf_utils.py as a module (mirrors finetune_enformer_mpra.py).
+# This sidesteps `alphagenome_ft_mpra/__init__.py`, which would otherwise
+# import JAX, keeping the Enformer training path PyTorch-only.
+# enf_utils.py now also exposes EpisomalMPRADatasetPyTorch alongside the
+# Enformer head and the LentiMPRA/DeepSTARR PyTorch datasets.
 def _load_module(name: str, relpath: str):
     path = Path(__file__).parent.parent / "alphagenome_ft_mpra" / relpath
     spec = importlib.util.spec_from_file_location(name, path)
@@ -48,9 +50,7 @@ def _load_module(name: str, relpath: str):
 
 _enf_utils = _load_module("enf_utils", "enf_utils.py")
 EncoderMPRAHead = _enf_utils.EncoderMPRAHead
-
-_episomal_data = _load_module("episomal_data", "episomal_data.py")
-EpisomalMPRADatasetPyTorch = _episomal_data.EpisomalMPRADatasetPyTorch
+EpisomalMPRADatasetPyTorch = _enf_utils.EpisomalMPRADatasetPyTorch
 
 from enformer_pytorch import from_pretrained  # noqa: E402
 
@@ -323,6 +323,14 @@ def main():
                         choices=["plateau", "cosine"])
     parser.add_argument("--second_stage_lr", type=float, default=None)
     parser.add_argument("--second_stage_epochs", type=int, default=50)
+    parser.add_argument(
+        "--resume_from_stage2_from",
+        type=str,
+        default=None,
+        help="Path to a Stage-1 Lightning checkpoint (.ckpt). When provided, "
+             "Stage 1 is skipped and the model is loaded from this path before "
+             "Stage 2 begins. Requires --second_stage_lr.",
+    )
     parser.add_argument("--early_stopping_patience", type=int, default=5)
     parser.add_argument("--max_shift", type=int, default=10)
     parser.add_argument("--pad_n_bases", type=int,
@@ -381,6 +389,14 @@ def main():
     if args.wandb_name is None:
         args.wandb_name = f"enformer-episomal-{args.cell_type}-seed{args.seed}"
 
+    if args.resume_from_stage2_from and args.second_stage_lr is None:
+        parser.error("--resume_from_stage2_from requires --second_stage_lr.")
+    if args.resume_from_stage2_from and not Path(args.resume_from_stage2_from).is_file():
+        parser.error(
+            f"--resume_from_stage2_from path does not exist: "
+            f"{args.resume_from_stage2_from}"
+        )
+
     pl.seed_everything(args.seed, workers=True)
 
     print("=" * 80)
@@ -390,8 +406,12 @@ def main():
     print(f"epochs: {args.num_epochs} | lr: {args.learning_rate} | wd: {args.weight_decay}")
     print(f"pad_n_bases: {args.pad_n_bases} (200bp → {200 + args.pad_n_bases}bp)")
     if args.second_stage_lr:
-        print(f"Two-stage: stage1={args.num_epochs}ep, "
-              f"stage2={args.second_stage_epochs}ep @ {args.second_stage_lr}")
+        if args.resume_from_stage2_from:
+            print(f"Two-stage: stage1=SKIPPED (resuming from {args.resume_from_stage2_from}), "
+                  f"stage2={args.second_stage_epochs}ep @ {args.second_stage_lr}")
+        else:
+            print(f"Two-stage: stage1={args.num_epochs}ep, "
+                  f"stage2={args.second_stage_epochs}ep @ {args.second_stage_lr}")
     print("=" * 80)
 
     # Data
@@ -455,30 +475,39 @@ def main():
                 "lr_scheduler": args.lr_scheduler,
                 "two_stage": args.second_stage_lr is not None,
                 "second_stage_lr": args.second_stage_lr,
+                "resume_from_stage2_from": args.resume_from_stage2_from,
                 "seed": args.seed,
             },
         )
 
-    print("\n" + "=" * 80 + "\nStage 1 Training (Frozen Encoder)\n" + "=" * 80)
-    trainer = pl.Trainer(
-        max_epochs=args.num_epochs,
-        callbacks=callbacks,
-        logger=logger,
-        gradient_clip_val=args.gradient_clip,
-        accelerator="gpu",
-        devices=1,
-        precision=16,
-        log_every_n_steps=10,
-    )
-    trainer.fit(model, dm)
+    if args.resume_from_stage2_from:
+        print("\n" + "=" * 80 +
+              "\nStage 1 Skipped — resuming from supplied checkpoint\n" + "=" * 80)
+        print(f"  {args.resume_from_stage2_from}")
+        trainer = None
+        stage1_ckpt = args.resume_from_stage2_from
+    else:
+        print("\n" + "=" * 80 + "\nStage 1 Training (Frozen Encoder)\n" + "=" * 80)
+        trainer = pl.Trainer(
+            max_epochs=args.num_epochs,
+            callbacks=callbacks,
+            logger=logger,
+            gradient_clip_val=args.gradient_clip,
+            accelerator="gpu",
+            devices=1,
+            precision=16,
+            log_every_n_steps=10,
+        )
+        trainer.fit(model, dm)
+        stage1_ckpt = ckpt_cb.best_model_path
 
     # Stage 2
     if args.second_stage_lr:
         print("\n" + "=" * 80 + "\nStage 2 Training (Unfrozen Encoder)\n" + "=" * 80)
-        if ckpt_cb.best_model_path:
-            print(f"Loading best Stage 1 checkpoint: {ckpt_cb.best_model_path}")
+        if stage1_ckpt:
+            print(f"Loading Stage 1 checkpoint: {stage1_ckpt}")
             model = EnformerEpisomalLightning.load_from_checkpoint(
-                ckpt_cb.best_model_path,
+                stage1_ckpt,
                 learning_rate=args.second_stage_lr,
                 second_stage_lr=args.second_stage_lr,
                 second_stage_epochs=args.second_stage_epochs,

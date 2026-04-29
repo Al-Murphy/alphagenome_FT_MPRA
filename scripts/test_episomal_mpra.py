@@ -22,7 +22,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from alphagenome_ft_mpra.episomal_data import (
+from alphagenome_ft_mpra.episomal_utils import (
     SEQUENCE_LENGTH,
     _load_gosai_data,
     _one_hot_encode,

@@ -9,12 +9,12 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from alphagenome_ft_mpra.episomal_data import (
+from alphagenome_ft_mpra.enf_utils import EpisomalMPRADatasetPyTorch
+from alphagenome_ft_mpra.episomal_utils import (
     DATA_FILENAME,
     SEQUENCE_LENGTH,
     TEST_CHROMOSOMES,
     VAL_CHROMOSOMES,
-    EpisomalMPRADatasetPyTorch,
     _load_gosai_data,
     _one_hot_encode,
     _parse_chromosome,
