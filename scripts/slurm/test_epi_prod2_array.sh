@@ -36,12 +36,20 @@ S2_DIR="$CKPT_BASE/stage2"
 OUT="$REPO/results/episomal_predictions"
 mkdir -p "$OUT"
 
-# Pick the lowest-val_loss ckpt by parsing val_loss=X.YYYY out of the filename.
+# Pick the lowest-val_loss ckpt by parsing val_loss=X.YYYY out of the filename,
+# skipping truncated/zero-byte files (Lightning sometimes saves a 0B ckpt next
+# to the real one when atomic-save races with disk-quota errors; the real one
+# is then written as ``...-v1.ckpt`` with the same val_loss).
 pick_best_ckpt() {
-    local dir=$1 prefix=$2
-    ls "$dir"/${prefix}*-val_loss=*.ckpt 2>/dev/null | \
-        awk -F'val_loss=' '{print $2"|"$0}' | \
-        sort -t'|' -k1n | head -1 | cut -d'|' -f2
+    local dir=$1 prefix=$2 minsize=104857600   # 100 MB
+    for f in "$dir"/${prefix}*-val_loss=*.ckpt; do
+        [ -f "$f" ] || continue
+        sz=$(stat -c %s "$f" 2>/dev/null || echo 0)
+        if [ "$sz" -ge "$minsize" ]; then
+            vl=$(echo "$f" | awk -F'val_loss=' '{print $2}' | sed 's/[^0-9.].*$//')
+            printf "%s\t%s\n" "$vl" "$f"
+        fi
+    done | sort -k1n | head -1 | cut -f2
 }
 
 S1_CKPT=$(pick_best_ckpt "$S1_DIR" "best-epoch=" || true)
