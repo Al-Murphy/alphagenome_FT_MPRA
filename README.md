@@ -94,6 +94,13 @@ Custom Task-Specific Heads (trainable)
 
 This approach allows leveraging rich pretrained representations while efficiently adapting to new tasks.
 
+### Parameter Counts (MPRA HepG2 setup)
+
+For the AlphaGenome + `EncoderMPRAHead` configuration used in MPRA fine-tuning (`configs/mpra_HepG2.json`):
+
+- Encoder parameters: ~90M
+- MPRA head parameters: ~4.7M
+
 
 ## Quick Start
 
