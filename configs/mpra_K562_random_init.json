@@ -1,0 +1,59 @@
+{
+  "_comment": "Random-init baseline for K562: identical hyperparameters to mpra_K562.json but backbone weights are replaced with random normal(0, 0.02) values. Used to rule out model capacity as a confounding factor.",
+  "_source": "Derived from mpra_K562.json",
+
+  "cell_type": "K562",
+
+  "data": {
+    "batch_size": 32,
+    "random_shift": true,
+    "random_shift_likelihood": 0.5,
+    "reverse_complement": true,
+    "pad_n_bases": 0
+  },
+
+  "model": {
+    "center_bp": 256,
+    "pooling_type": "flatten",
+    "nl_size": "2048",
+    "do": 0.4,
+    "activation": "relu"
+  },
+
+  "training": {
+    "num_epochs": 100,
+    "learning_rate": 1e-3,
+    "optimizer": "adam",
+    "weight_decay": 1e-6,
+    "gradient_accumulation_steps": 1,
+    "gradient_clip": null,
+    "lr_scheduler": null,
+    "no_val_split": false,
+    "early_stopping_patience": 5,
+    "val_eval_frequency": 4,
+    "test_eval_frequency": 4
+  },
+
+  "two_stage": {
+    "enabled": true,
+    "second_stage_lr": 1e-05,
+    "second_stage_epochs": 50
+  },
+
+  "cached_embeddings": {
+    "use_cached_embeddings": false,
+    "cache_file": null
+  },
+
+  "checkpointing": {
+    "checkpoint_dir": "./results/models/checkpoints/"
+  },
+
+  "wandb": {
+    "enabled": true,
+    "project": "alphagenome-mpra",
+    "wandb_name": "mpra-K562-random-init"
+  },
+
+  "base_checkpoint_path": null
+}

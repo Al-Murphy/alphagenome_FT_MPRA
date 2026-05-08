@@ -275,6 +275,21 @@ def main():
              'If provided, the base model will be loaded from this path '
              'instead of using Kaggle.'
     )
+    parser.add_argument(
+        '--random_init',
+        action='store_true',
+        help='Replace backbone (AlphaGenome encoder) parameters with random '
+             'normal weights after loading, discarding pretrained weights. '
+             'Use as a naive baseline to rule out model capacity as a '
+             'confounding factor. Head parameters are always randomly '
+             'initialised regardless of this flag.'
+    )
+    parser.add_argument(
+        '--random_init_seed',
+        type=int,
+        default=101,
+        help='Random seed used when --random_init is active (default: 42).'
+    )
     
     # Cached embeddings (for faster training)
     parser.add_argument(
@@ -586,6 +601,7 @@ def main():
     print(f"Use W&B:                    {not args.no_wandb}")
     if args.base_checkpoint_path is not None:
         print(f"Base AlphaGenome checkpoint:{args.base_checkpoint_path}")
+    print(f"Random init (baseline):     {args.random_init}")
     if not args.no_wandb:
         print(f"W&B project:                {args.wandb_project}")
         print(f"W&B run name:               {args.wandb_name}")
@@ -659,6 +675,47 @@ def main():
     )
     print("✓ Model created")
     
+    # Optionally reinitialise backbone with random weights (random-init baseline)
+    if args.random_init:
+        print(f"\nReinitalizing backbone with random weights (seed={args.random_init_seed})...")
+        _rng = jax.random.PRNGKey(args.random_init_seed)
+
+        def _reinit_subtree(subtree, base_key):
+            """Replace every leaf in *subtree* with normal(0, 0.02) noise."""
+            leaves, treedef = jax.tree_util.tree_flatten(subtree)
+            keys = jax.random.split(base_key, len(leaves))
+            new_leaves = [
+                jax.random.normal(k, leaf.shape, dtype=leaf.dtype) * 0.02
+                for k, leaf in zip(keys, leaves)
+            ]
+            return jax.tree_util.tree_unflatten(treedef, new_leaves)
+
+        if 'alphagenome' in model_with_custom._params:
+            _rng, _sub = jax.random.split(_rng)
+            new_backbone_params = _reinit_subtree(
+                model_with_custom._params['alphagenome'], _sub
+            )
+            model_with_custom._params = dict(model_with_custom._params)
+            model_with_custom._params['alphagenome'] = new_backbone_params
+        else:
+            print("  Warning: 'alphagenome' key not found in params – "
+                  "reinitializing all parameters.")
+            _rng, _sub = jax.random.split(_rng)
+            model_with_custom._params = _reinit_subtree(
+                model_with_custom._params, _sub
+            )
+
+        # Also reinit state (batch-norm running stats, etc.) if the key exists
+        if isinstance(model_with_custom._state, dict) and 'alphagenome' in model_with_custom._state:
+            _rng, _sub = jax.random.split(_rng)
+            new_backbone_state = _reinit_subtree(
+                model_with_custom._state['alphagenome'], _sub
+            )
+            model_with_custom._state = dict(model_with_custom._state)
+            model_with_custom._state['alphagenome'] = new_backbone_state
+
+        print("✓ Backbone reinitialized with random weights")
+
     # Freeze backbone if requested
     if not args.no_freeze_backbone:
         print("\nFreezing backbone (training head only)...")
