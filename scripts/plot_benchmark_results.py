@@ -56,6 +56,10 @@ def load_lentimpra_data():
         {'model': 'AG MPRA', 'regime': 'Fine-tuned', 'cell_type': 'HepG2', 'pearson_r': 0.887},
         {'model': 'AG MPRA', 'regime': 'Fine-tuned', 'cell_type': 'K562', 'pearson_r': 0.879},
         {'model': 'AG MPRA', 'regime': 'Fine-tuned', 'cell_type': 'WTC11', 'pearson_r': 0.839},
+        # AlphaGenome random initialisation
+        {'model': 'AG MPRA', 'regime': 'Random Init', 'cell_type': 'HepG2', 'pearson_r': 0.661},
+        {'model': 'AG MPRA', 'regime': 'Random Init', 'cell_type': 'K562', 'pearson_r': 0.697},
+        {'model': 'AG MPRA', 'regime': 'Random Init', 'cell_type': 'WTC11', 'pearson_r': 0.626},
     ]
     
     df = pd.DataFrame(data)
@@ -107,7 +111,7 @@ def load_starrseq_data():
     return df
 
 
-def plot_lentimpra_benchmark(dat, pal, figsize=(8, 5)):
+def plot_lentimpra_benchmark(dat, pal, figsize=(8, 5), include_random_init=False):
     """Create bar plot for lentiMPRA benchmark.
     
     Args:
@@ -137,6 +141,14 @@ def plot_lentimpra_benchmark(dat, pal, figsize=(8, 5)):
         'AG MPRA (Probing)': pal[2],
         'AG MPRA (Fine-tuned)': pal[3],
     }
+    
+    #filter random init
+    if not include_random_init:
+        dat = dat[dat['regime'] != 'Random Init']
+    else:
+        model_order.append('AG MPRA (Random Init)')
+        model_colors['AG MPRA (Random Init)'] = pal[4]
+            
     
     # Create grouped bar plot
     x_pos = np.arange(len(cell_order))
@@ -407,6 +419,21 @@ def main():
             formats=args.formats
         )
         plt.close(fig_lentimpra)
+        print()
+        #plot random initialisation
+        fig_random = plot_lentimpra_benchmark(
+            lentimpra_dat,
+            pal,
+            figsize=tuple(args.figsize_lentimpra),
+            include_random_init=True
+        )
+        save_plots(
+            fig_random,
+            output_dir / 'lentimpra_benchmark_random_init',
+            dpi=args.dpi,
+            formats=args.formats
+        )
+        plt.close(fig_random)
         print()
     
     # Generate STARR-seq plot
