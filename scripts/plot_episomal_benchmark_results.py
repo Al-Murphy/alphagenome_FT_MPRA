@@ -3,9 +3,10 @@
 
 Two layouts (selected with ``--style``):
 
-* ``cell_averaged`` (default) — one panel, three test-set groups, one bar per
-  model with sample-size-weighted average across cells. Mirrors the lentiMPRA
-  / STARR-seq panels in the paper.
+* ``cell_averaged`` (default) — one panel, four test-set groups
+  (Genomic Reference / High-Activity Designed / Genomic Alternate /
+  SNV Effects), one bar per model with sample-size-weighted average across
+  cells. Mirrors the lentiMPRA / STARR-seq panels in the paper.
 * ``per_cell`` — one panel per test set, one group per cell type, models
   side-by-side. Useful when the per-cell breakdown matters.
 
@@ -324,13 +325,13 @@ def plot_episomal_benchmark(df: pd.DataFrame, figsize=(18, 5)):
 # Drops MPRALegNet by default because it shares a color with Malinois in the
 # repo's palette.
 
-CELL_AVG_GROUP_KEYS = ["reference", "snv", "designed"]
+CELL_AVG_GROUP_KEYS = ["reference", "designed", "snv_abs", "snv"]
 CELL_AVG_GROUP_LABELS = [
     "Genomic Reference\nSequences",
-    "SNV Effects",
     "High-Activity\nDesigned Sequences",
+    "Genomic Alternate\nSequences (SNVs)",
+    "SNV Effects\n(Ref − Alt)",
 ]
-
 
 def _weighted_stats(values: np.ndarray, weights: np.ndarray) -> tuple[float, float]:
     """Sample-size-weighted mean + Cochran-style reliability-weighted SD."""
@@ -351,8 +352,9 @@ def _weighted_stats(values: np.ndarray, weights: np.ndarray) -> tuple[float, flo
 def plot_episomal_cell_averaged(df: pd.DataFrame, figsize=(9, 6),
                                  ylim=(0.0, 1.0),
                                  model_order=None) -> plt.Figure:
-    """Single-panel cell-averaged bar plot (matches the lentiMPRA / STARR-seq
-    panel style: 3 test-set groups × 6 model bars per group)."""
+    """Single-panel cell-averaged bar plot: 4 test-set groups
+    (Reference / Designed / Alternate / SNV Effects) × 6 model bars per group,
+    sample-size-weighted across cells."""
     setup_plot_style()
     if model_order is None:
         model_order = MODEL_ORDER_CELL_AVG
@@ -395,19 +397,22 @@ def plot_episomal_cell_averaged(df: pd.DataFrame, figsize=(9, 6),
                 ax.annotate(f"{val:.3f}", xy=(cx, val + err),
                             xytext=(0, 3), textcoords="offset points",
                             ha="center", va="bottom",
-                            fontsize=9, fontweight="bold", rotation=90,
+                            fontsize=11, fontweight="bold", rotation=90,
                             color=txt_color)
 
     ax.set_xticks(x)
-    ax.set_xticklabels(CELL_AVG_GROUP_LABELS)
-    ax.set_ylabel("Pearson Correlation")
+    ax.set_xticklabels(CELL_AVG_GROUP_LABELS, fontsize=14)
+    ax.set_ylabel("Pearson Correlation", fontsize=16)
     ax.set_ylim(ylim)
-    ax.set_title("Episomal MPRA", fontsize=14)
+    ax.set_title("Episomal MPRA", fontsize=18, fontweight="bold")
+    ax.tick_params(axis="y", labelsize=13)
     ax.yaxis.grid(alpha=0.5, linestyle="--")
     ax.set_axisbelow(True)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
-    ax.legend(loc="upper right", frameon=False, fontsize=9, ncol=2)
+    ax.legend(loc="upper right", bbox_to_anchor=(0.97, 1.0),
+              frameon=False, fontsize=12, ncol=1,
+              handlelength=2.2, handleheight=0.7, borderaxespad=0.3)
     fig.tight_layout()
     return fig
 
@@ -455,9 +460,10 @@ def main():
     parser.add_argument("--style", type=str, default="cell_averaged",
                         choices=["cell_averaged", "per_cell"],
                         help="Plot layout. 'cell_averaged' = single panel, "
-                             "3 test-set groups, sample-size-weighted average "
-                             "across cells (matches lentiMPRA / STARR-seq plots). "
-                             "'per_cell' = one panel per test set, cells on x-axis.")
+                             "4 test-set groups (Reference / Designed / "
+                             "Alternate / SNV Effects), sample-size-weighted "
+                             "average across cells. 'per_cell' = one panel per "
+                             "test set, cells on x-axis.")
     parser.add_argument("--dpi", type=int, default=1200)
     parser.add_argument("--formats", type=str, nargs="+",
                         default=["pdf", "png"], choices=["pdf", "png", "svg"])
@@ -490,7 +496,7 @@ def main():
           f"{df['test_set'].nunique()} test sets.")
 
     if args.style == "cell_averaged":
-        figsize = tuple(args.figsize) if args.figsize else (9, 6)
+        figsize = tuple(args.figsize) if args.figsize else (13, 6.5)
         fig = plot_episomal_cell_averaged(df, figsize=figsize)
     else:
         figsize = tuple(args.figsize) if args.figsize else (18, 5)

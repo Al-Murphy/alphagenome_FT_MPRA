@@ -91,10 +91,21 @@ def pad_n_bases(seq: str, n: int) -> str:
     return "N" * left + seq + "N" * right
 
 
+def _normalize_chrs(chrs):
+    """Normalize a chr list/set/str/comma-string to a set of ``chrN``."""
+    if chrs is None:
+        return None
+    if isinstance(chrs, str):
+        chrs = [c.strip() for c in chrs.split(",") if c.strip()]
+    return {c if str(c).startswith("chr") else f"chr{c}" for c in chrs}
+
+
 def _load_gosai_data(
     data_path: str,
     cell_type: str,
     split: str,
+    val_chrs=None,
+    test_chrs=None,
 ) -> pd.DataFrame:
     """Load and filter Gosai episomal MPRA data for a cell type and split.
 
@@ -102,12 +113,17 @@ def _load_gosai_data(
         data_path: Directory containing ``DATA-Table_S2__MPRA_dataset.txt``.
         cell_type: One of ``K562``, ``HepG2``, ``SKNSH``.
         split: One of ``train``, ``val``, ``test``.
+        val_chrs: Optional override for the val chromosome set (MPAC 10-fold).
+        test_chrs: Optional override for the test chromosome set.
 
     Returns:
         DataFrame with columns ``sequence``, ``label``, ``chromosome``, ``id``.
     """
     assert cell_type in VALID_CELL_TYPES, f"cell_type must be one of {VALID_CELL_TYPES}"
     assert split in VALID_SPLITS, f"split must be one of {VALID_SPLITS}"
+
+    val_set = _normalize_chrs(val_chrs) if val_chrs is not None else VAL_CHROMOSOMES
+    test_set = _normalize_chrs(test_chrs) if test_chrs is not None else TEST_CHROMOSOMES
 
     filepath = os.path.join(data_path, DATA_FILENAME)
     assert os.path.exists(filepath), f"Data file not found: {filepath}"
@@ -116,9 +132,6 @@ def _load_gosai_data(
 
     df = pd.read_csv(filepath, sep="\t", low_memory=False)
 
-    # Resolve chromosome: prefer a dedicated 'chr' column (Gosai schema), fall
-    # back to parsing the leading token of the IDs column for archives that
-    # ship only the IDs.
     if "chr" in df.columns:
         df["chromosome"] = df["chr"].astype(str).apply(
             lambda c: c if c.startswith("chr") else f"chr{c}"
@@ -134,11 +147,11 @@ def _load_gosai_data(
     df = df[df["sequence"].str.len() >= 198]
 
     if split == "test":
-        df = df[df["chromosome"].isin(TEST_CHROMOSOMES)]
+        df = df[df["chromosome"].isin(test_set)]
     elif split == "val":
-        df = df[df["chromosome"].isin(VAL_CHROMOSOMES)]
+        df = df[df["chromosome"].isin(val_set)]
     else:  # train
-        exclude = TEST_CHROMOSOMES | VAL_CHROMOSOMES
+        exclude = test_set | val_set
         df = df[~df["chromosome"].isin(exclude)]
 
     return pd.DataFrame({

@@ -689,6 +689,8 @@ class EpisomalMPRADatasetPyTorch:
         pad_n_bases: int = 0,
         subset_frac: float = 1.0,
         seed: int = 42,
+        val_chrs=None,
+        test_chrs=None,
     ):
         assert cell_type in _episomal_utils.VALID_CELL_TYPES, (
             f"cell_type must be one of {_episomal_utils.VALID_CELL_TYPES}"
@@ -707,7 +709,10 @@ class EpisomalMPRADatasetPyTorch:
         self.pad_n_bases = pad_n_bases
         self.rng = np.random.RandomState(seed)
 
-        self.data = _episomal_utils._load_gosai_data(path_to_data, cell_type, split)
+        self.data = _episomal_utils._load_gosai_data(
+            path_to_data, cell_type, split,
+            val_chrs=val_chrs, test_chrs=test_chrs,
+        )
 
         if subset_frac < 1.0:
             n = int(len(self.data) * subset_frac)
