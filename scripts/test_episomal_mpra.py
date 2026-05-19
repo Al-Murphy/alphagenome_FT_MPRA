@@ -84,7 +84,7 @@ def _ag_predict_batch(model, sequences, head_name="mpra_head"):
         elif len(s) > SEQUENCE_LENGTH:
             start = (len(s) - SEQUENCE_LENGTH) // 2
             s = s[start:start + SEQUENCE_LENGTH]
-        ohe = model._one_hot_encoder.encode(s, organism)
+        ohe = model._one_hot_encoder.encode(s)
         seq_batch = jnp.expand_dims(ohe, 0)
         with model._device_context:
             out = model._predict(

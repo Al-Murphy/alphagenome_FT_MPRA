@@ -116,6 +116,13 @@ def main():
     # Seed
     parser.add_argument("--seed", type=int, default=42)
 
+    # MPAC 10-fold splits (override default chr19/21/X val + chr7/13 test).
+    parser.add_argument("--val_chrs", type=str, default=None,
+                        help="Comma-separated val chromosomes (e.g. '1' or 'chr1,chr2'). "
+                        "If None, uses VAL_CHROMOSOMES={chr19, chr21, chrX}.")
+    parser.add_argument("--test_chrs", type=str, default=None,
+                        help="Comma-separated test chromosomes. Default TEST_CHROMOSOMES={chr7, chr13}.")
+
     # Two-pass: read config first, then apply as defaults so CLI overrides config.
     temp_args, _ = parser.parse_known_args()
     config = None
@@ -313,6 +320,8 @@ def main():
         rng_key=rng_train,
         use_cached_embeddings=args.use_cached_embeddings,
         cache_file=args.cache_file if args.use_cached_embeddings else None,
+        val_chrs=args.val_chrs,
+        test_chrs=args.test_chrs,
     )
 
     val_cache = test_cache = None
@@ -335,6 +344,8 @@ def main():
             rng_key=rng_val,
             use_cached_embeddings=args.use_cached_embeddings,
             cache_file=val_cache,
+            val_chrs=args.val_chrs,
+            test_chrs=args.test_chrs,
         )
 
     test_dataset = EpisomalMPRADataset(
@@ -348,6 +359,8 @@ def main():
         rng_key=rng_test,
         use_cached_embeddings=args.use_cached_embeddings,
         cache_file=test_cache,
+        val_chrs=args.val_chrs,
+        test_chrs=args.test_chrs,
     )
 
     # Dataloaders

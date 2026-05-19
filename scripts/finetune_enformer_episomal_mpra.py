@@ -88,6 +88,8 @@ class EpisomalMPRADataModule(LightningDataModule):
         max_shift: int = 10,
         reverse_complement: bool = True,
         pad_n_bases: int = EPISOMAL_PAD_TO_LENTI_CONSTRUCT,
+        val_chrs=None,
+        test_chrs=None,
     ):
         super().__init__()
         self.data_path = data_path
@@ -99,6 +101,8 @@ class EpisomalMPRADataModule(LightningDataModule):
         self.max_shift = max_shift
         self.reverse_complement = reverse_complement
         self.pad_n_bases = pad_n_bases
+        self.val_chrs = val_chrs
+        self.test_chrs = test_chrs
 
         self.train_dataset = None
         self.val_dataset = None
@@ -109,6 +113,8 @@ class EpisomalMPRADataModule(LightningDataModule):
             path_to_data=self.data_path,
             cell_type=self.cell_type,
             pad_n_bases=self.pad_n_bases,
+            val_chrs=self.val_chrs,
+            test_chrs=self.test_chrs,
         )
         if stage in (None, "fit"):
             self.train_dataset = _PyTorchEpisomalDataset(
@@ -343,6 +349,12 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--num_workers", type=int, default=4)
 
+    # MPAC 10-fold splits
+    parser.add_argument("--val_chrs", type=str, default=None,
+                        help="Comma-separated val chromosomes (override default {19,21,X}).")
+    parser.add_argument("--test_chrs", type=str, default=None,
+                        help="Comma-separated test chromosomes (default {7,13}).")
+
     # Two-pass parsing so config sets defaults but CLI args still override
     # (matches the pattern in finetune_episomal_mpra.py / finetune_mpra.py).
     temp_args, _ = parser.parse_known_args()
@@ -426,6 +438,8 @@ def main():
         max_shift=args.max_shift,
         reverse_complement=True,
         pad_n_bases=args.pad_n_bases,
+        val_chrs=args.val_chrs,
+        test_chrs=args.test_chrs,
     )
     dm.setup()
     print(f"✓ Train: {len(dm.train_dataset)} | "
@@ -495,7 +509,7 @@ def main():
             gradient_clip_val=args.gradient_clip,
             accelerator="gpu",
             devices=1,
-            precision=16,
+            precision="bf16-mixed",
             log_every_n_steps=10,
         )
         trainer.fit(model, dm)
@@ -538,7 +552,7 @@ def main():
             gradient_clip_val=args.gradient_clip,
             accelerator="gpu",
             devices=1,
-            precision=16,
+            precision="bf16-mixed",
             log_every_n_steps=10,
         )
         trainer.fit(model, dm)

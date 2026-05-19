@@ -798,6 +798,8 @@ class EpisomalMPRADataset:
         rng_key=None,
         use_cached_embeddings: bool = False,
         cache_file: str | None = None,
+        val_chrs=None,
+        test_chrs=None,
     ):
         from .episomal_utils import (
             VALID_CELL_TYPES,
@@ -825,7 +827,10 @@ class EpisomalMPRADataset:
         self.random_shift_likelihood = random_shift_likelihood
         self.max_shift = max_shift
 
-        self.data = _load_gosai_data(path_to_data, cell_type, split)
+        self.data = _load_gosai_data(
+            path_to_data, cell_type, split,
+            val_chrs=val_chrs, test_chrs=test_chrs,
+        )
 
         if subset_frac < 1.0:
             n = int(len(self.data) * subset_frac)
