@@ -1,7 +1,7 @@
 """AG S2 joint multitask: inference on full chr 7+13 + 45k SNV + 22k OOD.
 
 Loads the Orbax checkpoint, runs RC-averaged prediction per cell head, saves npz.
-Mirrors the training script's predict_step but on the full test set instead of hashfrag-filtered.
+Runs on the canonical 32k Ref + 32k Alt + 45k SNV-pair + 22k Designed/OOD panels.
 """
 import argparse, sys, time, numpy as np, pandas as pd
 from pathlib import Path

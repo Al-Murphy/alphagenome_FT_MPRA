@@ -6,8 +6,11 @@ Panels computed (per cell × seed where available):
   - reference_45k    : 45k SNV-pair ref allele (test_snv_pairs.tsv ref)
   - alt_45k          : 45k SNV-pair alt allele (test_snv_pairs.tsv alt)
   - delta_45k        : 45k SNV-pair Δ          (alt − ref)
+  - delta_30k_mono   : mono-allelic 30k subset of 45k SNV pairs
   - designed_ood     : 22k OOD designed
-  - snv_filt2962     : 2962 chr-filtered hashfrag SNV pair Δ
+
+No hashfrag-filtered subsets — every panel uses the full chr 7+13 / SNV-pair
+test set (or the mono-allelic 30k subset for Δ).
 
 Output: prints rows in (model, cell, seed, panel, pearson_r, n) → also writes CSV.
 """
@@ -27,7 +30,6 @@ ref_mask = chr_all['allele'].values == 'R'
 alt_mask = chr_all['allele'].values == 'A'
 
 snv_pairs_k562 = pd.read_csv(REPO / 'data/k562/test_sets/test_snv_pairs.tsv', sep='\t')
-hashfrag_pairs = pd.read_csv(REPO / 'data/k562/test_sets/test_snv_pairs_hashfrag.tsv', sep='\t')
 
 # Mono-allelic mask: drop rows where either ref or alt ID has an Alt_ tag
 # (those rows are multi-allelic context expansions that artificially inflate Pearson).
