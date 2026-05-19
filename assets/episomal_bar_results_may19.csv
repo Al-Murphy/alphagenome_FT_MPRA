@@ -1,139 +1,157 @@
-model,cell_type,test_set,pearson_r,seed,n_samples,source,config
-DREAM-RNN,K562,reference,0.878,42,31435,training-time,best-HP (lr=5e-3 bs=1024)
-DREAM-RNN,K562,reference,0.878,1042,31435,training-time,best-HP
-DREAM-RNN,K562,reference,0.878,2042,31435,training-time,best-HP
-DREAM-RNN,K562,designed,0.471,42,22962,training-time,best-HP
-DREAM-RNN,K562,designed,0.471,1042,22962,training-time,best-HP
-DREAM-RNN,K562,designed,0.471,2042,22962,training-time,best-HP
-DREAM-RNN,K562,snv_abs,0.866,42,45543,training-time,best-HP
-DREAM-RNN,K562,snv_abs,0.866,1042,45543,training-time,best-HP
-DREAM-RNN,K562,snv_abs,0.866,2042,45543,training-time,best-HP
-DREAM-RNN,K562,snv,0.360,42,45543,training-time,best-HP
-DREAM-RNN,K562,snv,0.360,1042,45543,training-time,best-HP
-DREAM-RNN,K562,snv,0.360,2042,45543,training-time,best-HP
-DREAM-RNN,HepG2,reference,0.848,42,31435,training-time,best-HP
-DREAM-RNN,HepG2,reference,0.848,1042,31435,training-time,best-HP
-DREAM-RNN,HepG2,reference,0.848,2042,31435,training-time,best-HP
-DREAM-RNN,HepG2,designed,0.445,42,22962,training-time,best-HP
-DREAM-RNN,HepG2,designed,0.445,1042,22962,training-time,best-HP
-DREAM-RNN,HepG2,designed,0.445,2042,22962,training-time,best-HP
-DREAM-RNN,HepG2,snv_abs,0.839,42,45543,training-time,best-HP
-DREAM-RNN,HepG2,snv_abs,0.839,1042,45543,training-time,best-HP
-DREAM-RNN,HepG2,snv_abs,0.839,2042,45543,training-time,best-HP
-DREAM-RNN,HepG2,snv,0.346,42,45543,training-time,best-HP
-DREAM-RNN,HepG2,snv,0.346,1042,45543,training-time,best-HP
-DREAM-RNN,HepG2,snv,0.346,2042,45543,training-time,best-HP
-DREAM-RNN,SKNSH,reference,0.848,42,31435,training-time,best-HP
-DREAM-RNN,SKNSH,reference,0.848,1042,31435,training-time,best-HP
-DREAM-RNN,SKNSH,reference,0.848,2042,31435,training-time,best-HP
-DREAM-RNN,SKNSH,designed,0.312,42,22962,training-time,best-HP
-DREAM-RNN,SKNSH,designed,0.312,1042,22962,training-time,best-HP
-DREAM-RNN,SKNSH,designed,0.312,2042,22962,training-time,best-HP
-DREAM-RNN,SKNSH,snv_abs,0.841,42,45543,training-time,best-HP
-DREAM-RNN,SKNSH,snv_abs,0.841,1042,45543,training-time,best-HP
-DREAM-RNN,SKNSH,snv_abs,0.841,2042,45543,training-time,best-HP
-DREAM-RNN,SKNSH,snv,0.319,42,45543,training-time,best-HP
-DREAM-RNN,SKNSH,snv,0.319,1042,45543,training-time,best-HP
-DREAM-RNN,SKNSH,snv,0.319,2042,45543,training-time,best-HP
-Malinois,K562,reference,0.844,42,32831,proper_eval,pub-HPs (ld=0.116 bd=0.576 cosine LR)
-Malinois,K562,reference,0.849,1042,32831,proper_eval,pub-HPs
-Malinois,K562,reference,0.849,2042,32831,proper_eval,pub-HPs
-Malinois,K562,designed,0.486,42,22962,proper_eval,pub-HPs
-Malinois,K562,designed,0.498,1042,22962,proper_eval,pub-HPs
-Malinois,K562,designed,0.495,2042,22962,proper_eval,pub-HPs
-Malinois,K562,snv_abs,0.852,42,45543,proper_eval,pub-HPs (Alt_paired_full)
-Malinois,K562,snv_abs,0.857,1042,45543,proper_eval,pub-HPs
-Malinois,K562,snv_abs,0.857,2042,45543,proper_eval,pub-HPs
-Malinois,K562,snv,0.603,42,45543,proper_eval,pub-HPs (SNV_full)
-Malinois,K562,snv,0.609,1042,45543,proper_eval,pub-HPs
-Malinois,K562,snv,0.610,2042,45543,proper_eval,pub-HPs
-Malinois,HepG2,reference,0.849,42,32831,proper_eval,pub-HPs
-Malinois,HepG2,reference,0.848,1042,32831,proper_eval,pub-HPs
-Malinois,HepG2,reference,0.850,2042,32831,proper_eval,pub-HPs
-Malinois,HepG2,designed,0.353,42,22962,proper_eval,pub-HPs
-Malinois,HepG2,designed,0.323,1042,22962,proper_eval,pub-HPs
-Malinois,HepG2,designed,0.375,2042,22962,proper_eval,pub-HPs
-Malinois,HepG2,snv_abs,0.864,42,45543,proper_eval,pub-HPs
-Malinois,HepG2,snv_abs,0.866,1042,45543,proper_eval,pub-HPs
-Malinois,HepG2,snv_abs,0.864,2042,45543,proper_eval,pub-HPs
-Malinois,HepG2,snv,0.626,42,45543,proper_eval,pub-HPs
-Malinois,HepG2,snv,0.605,1042,45543,proper_eval,pub-HPs
-Malinois,HepG2,snv,0.628,2042,45543,proper_eval,pub-HPs
-Malinois,SKNSH,reference,0.840,42,32831,proper_eval,pub-HPs
-Malinois,SKNSH,reference,0.838,1042,32831,proper_eval,pub-HPs
-Malinois,SKNSH,reference,0.839,2042,32831,proper_eval,pub-HPs
-Malinois,SKNSH,designed,0.292,42,22962,proper_eval,pub-HPs
-Malinois,SKNSH,designed,0.292,1042,22962,proper_eval,pub-HPs
-Malinois,SKNSH,designed,0.308,2042,22962,proper_eval,pub-HPs
-Malinois,SKNSH,snv_abs,0.862,42,45543,proper_eval,pub-HPs
-Malinois,SKNSH,snv_abs,0.866,1042,45543,proper_eval,pub-HPs
-Malinois,SKNSH,snv_abs,0.866,2042,45543,proper_eval,pub-HPs
-Malinois,SKNSH,snv,0.550,42,45543,proper_eval,pub-HPs
-Malinois,SKNSH,snv,0.554,1042,45543,proper_eval,pub-HPs
-Malinois,SKNSH,snv,0.555,2042,45543,proper_eval,pub-HPs
-Enf. MPRA (Probing),HepG2,reference,0.857,42,32831,proper_eval,head-only
-Enf. MPRA (Probing),HepG2,reference,0.855,1042,32831,proper_eval,head-only
-Enf. MPRA (Probing),HepG2,reference,0.859,2042,32831,proper_eval,head-only
-Enf. MPRA (Probing),HepG2,designed,0.622,42,22962,proper_eval,head-only
-Enf. MPRA (Probing),HepG2,designed,0.580,1042,22962,proper_eval,head-only
-Enf. MPRA (Probing),HepG2,designed,0.616,2042,22962,proper_eval,head-only
-Enf. MPRA (Probing),HepG2,snv_abs,0.845,42,45543,proper_eval,head-only
-Enf. MPRA (Probing),HepG2,snv,0.345,42,2962,proper_eval,head-only (snv_filt)
-Enf. MPRA (Probing),SKNSH,reference,0.857,42,32831,proper_eval,head-only
-Enf. MPRA (Probing),SKNSH,reference,0.855,1042,32831,proper_eval,head-only
-Enf. MPRA (Probing),SKNSH,reference,0.859,2042,32831,proper_eval,head-only
-Enf. MPRA (Probing),SKNSH,designed,0.622,42,22962,proper_eval,head-only
-Enf. MPRA (Probing),SKNSH,snv_abs,0.845,42,45543,proper_eval,head-only
-Enf. MPRA (Probing),SKNSH,snv,0.345,42,2962,proper_eval,head-only (snv_filt)
-Enf. MPRA (Fine-tuned),K562,snv_abs,0.870,42,45543,chrsplit_metrics,UF=all enc_lr=5e-5 grad_clip=0.5
-Enf. MPRA (Fine-tuned),K562,snv_abs,0.866,1042,45543,chrsplit_metrics,UF=all
-Enf. MPRA (Fine-tuned),K562,snv_abs,0.873,2042,45543,chrsplit_metrics,UF=all
-Enf. MPRA (Fine-tuned),K562,snv,0.637,42,45543,chrsplit_metrics,UF=all
-Enf. MPRA (Fine-tuned),K562,snv,0.621,1042,45543,chrsplit_metrics,UF=all
-Enf. MPRA (Fine-tuned),K562,snv,0.624,2042,45543,chrsplit_metrics,UF=all
-Enf. MPRA (Fine-tuned),HepG2,snv_abs,0.881,42,45543,chrsplit_metrics,UF=all (3-seed pending)
-Enf. MPRA (Fine-tuned),HepG2,snv,0.646,42,45543,chrsplit_metrics,UF=all (3-seed pending)
-AG MPRA (Probing),K562,reference,0.895,42,31435,training-time,best-HP S1
-AG MPRA (Probing),K562,reference,0.895,1042,31435,training-time,best-HP S1
-AG MPRA (Probing),K562,reference,0.895,2042,31435,training-time,best-HP S1
-AG MPRA (Probing),K562,designed,0.709,42,22962,training-time,best-HP S1
-AG MPRA (Probing),K562,designed,0.709,1042,22962,training-time,best-HP S1
-AG MPRA (Probing),K562,designed,0.709,2042,22962,training-time,best-HP S1
-AG MPRA (Probing),K562,snv_abs,0.896,42,45543,training-time,best-HP S1
-AG MPRA (Probing),K562,snv,0.654,42,45543,training-time,best-HP S1
-AG MPRA (Probing),HepG2,reference,0.900,42,31435,training-time,best-HP S1
-AG MPRA (Probing),HepG2,reference,0.900,1042,31435,training-time,best-HP S1
-AG MPRA (Probing),HepG2,reference,0.900,2042,31435,training-time,best-HP S1
-AG MPRA (Probing),HepG2,designed,0.679,42,22962,training-time,best-HP S1
-AG MPRA (Probing),HepG2,designed,0.679,1042,22962,training-time,best-HP S1
-AG MPRA (Probing),HepG2,designed,0.679,2042,22962,training-time,best-HP S1
-AG MPRA (Probing),SKNSH,reference,0.885,42,31435,training-time,best-HP S1
-AG MPRA (Probing),SKNSH,reference,0.885,1042,31435,training-time,best-HP S1
-AG MPRA (Probing),SKNSH,reference,0.885,2042,31435,training-time,best-HP S1
-AG MPRA (Probing),SKNSH,designed,0.690,42,22962,training-time,best-HP S1
-AG MPRA (Probing),SKNSH,designed,0.690,1042,22962,training-time,best-HP S1
-AG MPRA (Probing),SKNSH,designed,0.690,2042,22962,training-time,best-HP S1
-AG MPRA (Fine-tuned),K562,reference,0.928,42,31435,joint training-time,joint multi-head
-AG MPRA (Fine-tuned),K562,reference,0.928,1042,31435,joint training-time,joint multi-head
-AG MPRA (Fine-tuned),K562,reference,0.928,2042,31435,joint training-time,joint multi-head
-AG MPRA (Fine-tuned),K562,designed,0.788,42,22962,joint training-time,joint multi-head
-AG MPRA (Fine-tuned),K562,designed,0.783,1042,22962,joint training-time,joint multi-head
-AG MPRA (Fine-tuned),K562,designed,0.792,2042,22962,joint training-time,joint multi-head
-AG MPRA (Fine-tuned),K562,snv_abs,0.927,42,45543,joint training-time,joint multi-head
-AG MPRA (Fine-tuned),K562,snv_abs,0.927,1042,45543,joint training-time,joint multi-head
-AG MPRA (Fine-tuned),K562,snv_abs,0.927,2042,45543,joint training-time,joint multi-head
-AG MPRA (Fine-tuned),K562,snv,0.712,42,45543,joint training-time,joint multi-head
-AG MPRA (Fine-tuned),K562,snv,0.715,1042,45543,joint training-time,joint multi-head
-AG MPRA (Fine-tuned),K562,snv,0.712,2042,45543,joint training-time,joint multi-head
-AG MPRA (Fine-tuned),HepG2,reference,0.931,42,31435,joint training-time,joint multi-head
-AG MPRA (Fine-tuned),HepG2,reference,0.931,1042,31435,joint training-time,joint multi-head
-AG MPRA (Fine-tuned),HepG2,reference,0.931,2042,31435,joint training-time,joint multi-head
-AG MPRA (Fine-tuned),HepG2,designed,0.742,42,22962,joint training-time,joint multi-head
-AG MPRA (Fine-tuned),HepG2,designed,0.736,1042,22962,joint training-time,joint multi-head
-AG MPRA (Fine-tuned),HepG2,designed,0.748,2042,22962,joint training-time,joint multi-head
-AG MPRA (Fine-tuned),SKNSH,reference,0.920,42,31435,joint training-time,joint multi-head
-AG MPRA (Fine-tuned),SKNSH,reference,0.920,1042,31435,joint training-time,joint multi-head
-AG MPRA (Fine-tuned),SKNSH,reference,0.920,2042,31435,joint training-time,joint multi-head
-AG MPRA (Fine-tuned),SKNSH,designed,0.798,42,22962,joint training-time,joint multi-head
-AG MPRA (Fine-tuned),SKNSH,designed,0.792,1042,22962,joint training-time,joint multi-head
-AG MPRA (Fine-tuned),SKNSH,designed,0.804,2042,22962,joint training-time,joint multi-head
+model,cell_type,test_set,pearson_r,seed,n_samples
+AG MPRA (Probing),K562,reference,0.8950382063407254,42,45543
+AG MPRA (Probing),K562,snv_abs,0.8973006023324424,42,45543
+AG MPRA (Probing),K562,snv,0.3603321185931547,42,29636
+AG MPRA (Probing),K562,designed,0.7206681346302811,42,22962
+AG MPRA (Probing),K562,reference,0.8883614697880907,1042,45543
+AG MPRA (Probing),K562,snv_abs,0.8890944056031987,1042,45543
+AG MPRA (Probing),K562,snv,0.3457986108756348,1042,29636
+AG MPRA (Probing),K562,designed,0.7044747625818565,1042,22962
+AG MPRA (Probing),K562,reference,0.8989892728050242,2042,45543
+AG MPRA (Probing),K562,snv_abs,0.9001463297136996,2042,45543
+AG MPRA (Probing),K562,snv,0.3620663821655788,2042,29636
+AG MPRA (Probing),K562,designed,0.7023777288508101,2042,22962
+AG MPRA (Probing),HepG2,reference,0.9069387838541474,42,45543
+AG MPRA (Probing),HepG2,snv_abs,0.9053000885824042,42,45543
+AG MPRA (Probing),HepG2,snv,0.3938678809800967,42,29636
+AG MPRA (Probing),HepG2,reference,0.9029467473050976,1042,45543
+AG MPRA (Probing),HepG2,snv_abs,0.9017789986199368,1042,45543
+AG MPRA (Probing),HepG2,snv,0.3736516891305732,1042,29636
+AG MPRA (Probing),HepG2,reference,0.9034868864566464,2042,45543
+AG MPRA (Probing),HepG2,snv_abs,0.900961343297904,2042,45543
+AG MPRA (Probing),HepG2,snv,0.38553525378263,2042,29636
+AG MPRA (Probing),SKNSH,reference,0.8848480576216626,42,45543
+AG MPRA (Probing),SKNSH,snv_abs,0.8805000375077939,42,45543
+AG MPRA (Probing),SKNSH,snv,0.3554627072136679,42,29636
+AG MPRA (Probing),SKNSH,reference,0.8860805735770257,1042,45543
+AG MPRA (Probing),SKNSH,snv_abs,0.880507201921474,1042,45543
+AG MPRA (Probing),SKNSH,snv,0.353913825093656,1042,29636
+AG MPRA (Probing),SKNSH,reference,0.8784521173045002,2042,45543
+AG MPRA (Probing),SKNSH,snv_abs,0.8752967726821195,2042,45543
+AG MPRA (Probing),SKNSH,snv,0.3424449612545061,2042,29636
+Malinois,K562,reference,0.8571734141138804,42,45543
+Malinois,K562,snv_abs,0.8554421995158055,42,45543
+Malinois,K562,snv,0.3093762563997405,42,29636
+Malinois,K562,designed,0.4959419926188994,42,22962
+Malinois,K562,reference,0.8601641935284383,1042,45543
+Malinois,K562,snv_abs,0.8585221047540683,1042,45543
+Malinois,K562,snv,0.3180665298939537,1042,29636
+Malinois,K562,designed,0.4853311715979025,1042,22962
+Malinois,K562,reference,0.8578458896573036,2042,45543
+Malinois,K562,snv_abs,0.8571091142945572,2042,45543
+Malinois,K562,snv,0.3206416438911134,2042,29636
+Malinois,K562,designed,0.4968536752908572,2042,22962
+Malinois,HepG2,reference,0.8754590131987167,42,45543
+Malinois,HepG2,snv_abs,0.874312657900343,42,45543
+Malinois,HepG2,snv,0.3244474120830421,42,29636
+Malinois,HepG2,designed,0.3409324155029742,42,22962
+Malinois,HepG2,reference,0.8775397590189138,1042,45543
+Malinois,HepG2,snv_abs,0.8763543599308059,1042,45543
+Malinois,HepG2,snv,0.3262992647961527,1042,29636
+Malinois,HepG2,designed,0.3795067877379716,1042,22962
+Malinois,HepG2,reference,0.8734301618181614,2042,45543
+Malinois,HepG2,snv_abs,0.8705254266116302,2042,45543
+Malinois,HepG2,snv,0.3228973524316357,2042,29636
+Malinois,HepG2,designed,0.3291108352980035,2042,22962
+Malinois,SKNSH,reference,0.8553138551135401,42,45543
+Malinois,SKNSH,snv_abs,0.847708029451227,42,45543
+Malinois,SKNSH,snv,0.3141064816849783,42,29636
+Malinois,SKNSH,designed,0.2889394243205391,42,22962
+Malinois,SKNSH,reference,0.8566128013866974,1042,45543
+Malinois,SKNSH,snv_abs,0.849724019376612,1042,45543
+Malinois,SKNSH,snv,0.3196959105499968,1042,29636
+Malinois,SKNSH,designed,0.3090220301098336,1042,22962
+Malinois,SKNSH,reference,0.8560059376074398,2042,45543
+Malinois,SKNSH,snv_abs,0.8509287391431639,2042,45543
+Malinois,SKNSH,snv,0.3206026028604915,2042,29636
+Malinois,SKNSH,designed,0.2926591372411882,2042,22962
+AG MPRA (Fine-tuned),K562,reference,0.9246762326357908,42,45543
+AG MPRA (Fine-tuned),K562,snv_abs,0.9275089305102356,42,45543
+AG MPRA (Fine-tuned),K562,snv,0.3945735288974605,42,29636
+AG MPRA (Fine-tuned),K562,designed,0.7877626018944731,42,22962
+AG MPRA (Fine-tuned),HepG2,reference,0.9327068236851772,42,45543
+AG MPRA (Fine-tuned),HepG2,snv_abs,0.9325325258818056,42,45543
+AG MPRA (Fine-tuned),HepG2,snv,0.4148672719602033,42,29636
+AG MPRA (Fine-tuned),HepG2,designed,0.7398973508899868,42,22962
+AG MPRA (Fine-tuned),SKNSH,reference,0.9157580829540086,42,45543
+AG MPRA (Fine-tuned),SKNSH,snv_abs,0.9132131934244344,42,45543
+AG MPRA (Fine-tuned),SKNSH,snv,0.3924213307662568,42,29636
+AG MPRA (Fine-tuned),SKNSH,designed,0.8060897811939038,42,22962
+AG MPRA (Fine-tuned),K562,reference,0.9250346560497046,1042,45543
+AG MPRA (Fine-tuned),K562,snv_abs,0.9275529361112376,1042,45543
+AG MPRA (Fine-tuned),K562,snv,0.391903104250176,1042,29636
+AG MPRA (Fine-tuned),K562,designed,0.7924361536966765,1042,22962
+AG MPRA (Fine-tuned),HepG2,reference,0.9325529242463938,1042,45543
+AG MPRA (Fine-tuned),HepG2,snv_abs,0.932743142213908,1042,45543
+AG MPRA (Fine-tuned),HepG2,snv,0.4146090025299983,1042,29636
+AG MPRA (Fine-tuned),HepG2,designed,0.7503041853730054,1042,22962
+AG MPRA (Fine-tuned),SKNSH,reference,0.9160970560251096,1042,45543
+AG MPRA (Fine-tuned),SKNSH,snv_abs,0.913471678046261,1042,45543
+AG MPRA (Fine-tuned),SKNSH,snv,0.3921729584527122,1042,29636
+AG MPRA (Fine-tuned),SKNSH,designed,0.7926344773806131,1042,22962
+AG MPRA (Fine-tuned),K562,reference,0.924346820855784,2042,45543
+AG MPRA (Fine-tuned),K562,snv_abs,0.9272725620656151,2042,45543
+AG MPRA (Fine-tuned),K562,snv,0.3899188698386461,2042,29636
+AG MPRA (Fine-tuned),K562,designed,0.7806265918064765,2042,22962
+AG MPRA (Fine-tuned),HepG2,reference,0.9316551662873044,2042,45543
+AG MPRA (Fine-tuned),HepG2,snv_abs,0.931784138501726,2042,45543
+AG MPRA (Fine-tuned),HepG2,snv,0.4150337747656556,2042,29636
+AG MPRA (Fine-tuned),HepG2,designed,0.7354250881545541,2042,22962
+AG MPRA (Fine-tuned),SKNSH,reference,0.9157691052192356,2042,45543
+AG MPRA (Fine-tuned),SKNSH,snv_abs,0.9130931546303068,2042,45543
+AG MPRA (Fine-tuned),SKNSH,snv,0.3912436461256298,2042,29636
+AG MPRA (Fine-tuned),SKNSH,designed,0.7958460677447572,2042,22962
+DREAM-RNN,K562,reference,0.950018900525294,123,45543
+DREAM-RNN,K562,snv_abs,0.93428281610674,123,45543
+DREAM-RNN,K562,snv,0.3806395906347274,123,29636
+DREAM-RNN,K562,designed,0.4514206798851163,123,22962
+DREAM-RNN,K562,reference,0.9468574938831932,42,45543
+DREAM-RNN,K562,snv_abs,0.9315861304573518,42,45543
+DREAM-RNN,K562,snv,0.3802613835122823,42,29636
+DREAM-RNN,K562,designed,0.4682913290822588,42,22962
+DREAM-RNN,K562,reference,0.949421035099352,456,45543
+DREAM-RNN,K562,snv_abs,0.933585024275153,456,45543
+DREAM-RNN,K562,snv,0.3810992993321108,456,29636
+DREAM-RNN,K562,designed,0.474955705453032,456,22962
+DREAM-RNN,HepG2,reference,0.9485937137785372,0,45543
+DREAM-RNN,HepG2,snv_abs,0.9246625163530184,0,45543
+DREAM-RNN,HepG2,snv,0.3546173853338691,0,29636
+DREAM-RNN,HepG2,designed,0.4450514920080553,0,22962
+DREAM-RNN,HepG2,reference,0.781913529392232,1,45543
+DREAM-RNN,HepG2,snv_abs,0.7802181532359137,1,45543
+DREAM-RNN,HepG2,snv,0.261232874478447,1,29636
+DREAM-RNN,HepG2,designed,0.1476941842351805,1,22962
+DREAM-RNN,HepG2,reference,0.9562068853407288,2,45543
+DREAM-RNN,HepG2,snv_abs,0.9295117699844712,2,45543
+DREAM-RNN,HepG2,snv,0.3678693080379146,2,29636
+DREAM-RNN,HepG2,designed,0.4539108208106561,2,22962
+DREAM-RNN,SKNSH,reference,-0.0027686627428422,0,45543
+DREAM-RNN,SKNSH,snv_abs,-0.0106214919572179,0,45543
+DREAM-RNN,SKNSH,snv,-0.0041037630140222,0,29636
+DREAM-RNN,SKNSH,designed,,0,22962
+DREAM-RNN,SKNSH,reference,0.9255238052937196,1,45543
+DREAM-RNN,SKNSH,snv_abs,0.9030622267463512,1,45543
+DREAM-RNN,SKNSH,snv,0.326592304287329,1,29636
+DREAM-RNN,SKNSH,designed,0.2485445711897224,1,22962
+DREAM-RNN,SKNSH,reference,0.936548628509235,2,45543
+DREAM-RNN,SKNSH,snv_abs,0.9144467380829688,2,45543
+DREAM-RNN,SKNSH,snv,0.3536220001086194,2,29636
+DREAM-RNN,SKNSH,designed,0.325484243056434,2,22962
+Enf. MPRA (Fine-tuned),K562,reference,0.8735237863866042,42,45543
+Enf. MPRA (Fine-tuned),K562,snv_abs,0.8750239035918626,42,45543
+Enf. MPRA (Fine-tuned),K562,snv,0.3393533647232936,42,29636
+Enf. MPRA (Fine-tuned),K562,reference,0.8663132755133913,1042,45543
+Enf. MPRA (Fine-tuned),K562,snv_abs,0.8667470929065968,1042,45543
+Enf. MPRA (Fine-tuned),K562,snv,0.3362308066271894,1042,29636
+Enf. MPRA (Fine-tuned),K562,reference,0.8726053832772415,2042,45543
+Enf. MPRA (Fine-tuned),K562,snv_abs,0.8736049130279493,2042,45543
+Enf. MPRA (Fine-tuned),K562,snv,0.329538997912758,2042,29636
+Enf. MPRA (Fine-tuned),HepG2,reference,0.8820289001031515,42,45543
+Enf. MPRA (Fine-tuned),HepG2,snv_abs,0.8811725940324456,42,45543
+Enf. MPRA (Fine-tuned),HepG2,snv,0.3537852497668473,42,29636
+Enf. MPRA (Fine-tuned),HepG2,reference,0.8849706953191088,2042,45543
+Enf. MPRA (Fine-tuned),HepG2,snv_abs,0.8833902089724075,2042,45543
+Enf. MPRA (Fine-tuned),HepG2,snv,0.359854331578299,2042,29636
+Enf. MPRA (Fine-tuned),SKNSH,reference,0.8582713114411811,42,45543
+Enf. MPRA (Fine-tuned),SKNSH,snv_abs,0.8515602564818424,42,45543
+Enf. MPRA (Fine-tuned),SKNSH,snv,0.3471978056270431,42,29636
