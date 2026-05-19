@@ -46,6 +46,11 @@ python scripts/finetune_enformer_episomal_mpra.py \
     --checkpoint_dir "$CKPT_DIR" \
     --wandb_name "$RUN_NAME" \
     --no_wandb \
-    --second_stage_lr 1e-4 \
+    --second_stage_lr 5e-5 \
     --second_stage_epochs 30 \
+    --gradient_clip 0.5 \
     --seed "$SEED"
+
+# UF=all stability HPs (May 2026): second_stage_lr 5e-5 + gradient_clip 0.5.
+# Earlier 1e-4 + no clip diverged to NaN around epoch 6 under bf16. With these
+# settings, v2 runs reached val_pearson 0.90–0.91 across K562/HepG2/SKNSH × 3 seeds.
