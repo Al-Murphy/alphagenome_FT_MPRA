@@ -37,6 +37,9 @@ class LentiMPRADataset:
         pad_n_bases: int = 0,
         use_cached_embeddings: bool = False,
         cache_file: str | None = None,
+        ag_test_filter_version: str | None = None,
+        coords_path: str | None = None,
+        fold_intervals_path: str | None = None,
     ):
         assert split in ["train", "val", "test"], f"split must be one of train, val, test"
         assert cell_type in ["HepG2", "K562", "WTC11"], f"cell_type must be one of HepG2, K562, WTC11"
@@ -84,6 +87,18 @@ class LentiMPRADataset:
         # filt by fold
         self.data = self.data[self.data["fold"].isin(self.chosen_fold)]
         self.data = self.data.reset_index(drop=True)
+
+        # Optional: when using an AlphaGenome single-fold backbone (e.g. fold_0),
+        # restrict the TEST split to CREs whose hg38 genomic position lies inside
+        # that fold's held-out TEST intervals. This avoids reporting test metrics
+        # on genomic regions the backbone saw during pretraining. Only the test
+        # split is filtered; train/val keep the standard LegNet folds.
+        self.ag_test_filter_version = ag_test_filter_version
+        if ag_test_filter_version is not None and split == "test":
+            self._apply_ag_genomic_test_filter(
+                ag_test_filter_version, coords_path, fold_intervals_path
+            )
+
         if self.subset_frac < 1.0:
             self.data = self.data.sample(frac=self.subset_frac)
         print(f"Loaded {len(self.data)} samples for {split} split")
@@ -106,14 +121,101 @@ class LentiMPRADataset:
         else:
             self.random_shift = random_shift
             self.reverse_complement = reverse_complement
-    
+
+    def _apply_ag_genomic_test_filter(
+        self,
+        version: str,
+        coords_path: str | None,
+        fold_intervals_path: str | None,
+    ):
+        """Keep only test CREs whose hg38 midpoint lies in the AG fold's TEST regions.
+
+        Joins ``self.data`` (by ``seq_id``) to the Agarwal 2025 large-scale design
+        coordinates (``lentimpra_hg38_coords.tsv``, built from Table S3) and keeps a
+        row only if the element's hg38 midpoint falls inside an AlphaGenome held-out
+        TEST interval for ``version`` (e.g. 'fold_0'). Elements with no coordinate
+        match (a handful of controls) are dropped.
+        """
+        import numpy as np
+        from alphagenome.data import fold_intervals
+        from alphagenome.models import dna_client
+
+        if coords_path is None:
+            coords_path = os.path.join(self.path_to_data, "lentimpra_hg38_coords.tsv")
+        if not os.path.exists(coords_path):
+            raise FileNotFoundError(
+                f"AG genomic test filter needs the hg38 coordinate table at {coords_path}. "
+                "Build it from Table S3 of Agarwal et al. 2025 (see scripts/build_lentimpra_coords.py)."
+            )
+
+        coords = pd.read_csv(coords_path, sep="\t")
+        coords = (
+            coords[coords["cell_type"] == self.cell_type]
+            .drop_duplicates("name")
+            .set_index("name")[["chr.hg38", "start.hg38", "stop.hg38"]]
+        )
+
+        try:
+            model_version = dna_client.ModelVersion[version.upper()]
+        except KeyError as exc:
+            raise ValueError(
+                f"Unknown AG model version '{version}'. Expected one of "
+                f"{[m.name.lower() for m in dna_client.ModelVersion]}."
+            ) from exc
+
+        ti = fold_intervals.get_fold_intervals(
+            model_version,
+            dna_client.Organism.HOMO_SAPIENS,
+            fold_intervals.Subset.TEST,
+            example_regions_path=fold_intervals_path,
+        ).copy()
+        ti["chromosome"] = ti["chromosome"].astype(str)
+        by_chr = {}
+        for chrom, grp in ti.groupby("chromosome"):
+            starts = grp["start"].to_numpy()
+            ends = grp["end"].to_numpy()
+            order = np.argsort(starts)
+            by_chr[chrom] = (starts[order], ends[order])
+
+        def _in_test(chrom: str, midpoint: int) -> bool:
+            if chrom not in by_chr:
+                return False
+            starts, ends = by_chr[chrom]
+            i = int(np.searchsorted(starts, midpoint, side="right")) - 1
+            return bool(i >= 0 and midpoint < ends[i])
+
+        joined = self.data.join(coords, on="seq_id")
+        has_coord = (
+            joined["chr.hg38"].notna()
+            & joined["start.hg38"].notna()
+            & joined["stop.hg38"].notna()
+        )
+        midpoints = (
+            joined["start.hg38"].astype("float") + joined["stop.hg38"].astype("float")
+        ) // 2
+
+        keep = np.zeros(len(joined), dtype=bool)
+        for i in range(len(joined)):
+            if not bool(has_coord.iloc[i]):
+                continue
+            keep[i] = _in_test(str(joined["chr.hg38"].iloc[i]), int(midpoints.iloc[i]))
+
+        n_before = len(self.data)
+        n_nocoord = int((~has_coord).sum())
+        self.data = self.data[keep].reset_index(drop=True)
+        print(
+            f"AG genomic test filter ({version}): {n_before} -> {len(self.data)} "
+            f"test CREs inside AG {version} held-out TEST regions "
+            f"(dropped {n_nocoord} with no design coordinates)"
+        )
+
     def _compute_sequence_hash(self, sequence: str) -> str:
         """Compute SHA256 hash of sequence for cache key."""
         return hashlib.sha256(sequence.encode()).hexdigest()
-    
+
     def _load_embedding_cache(self, cache_file: str):
         """Load embedding cache and create index-based lookup for fast access.
-        
+
         This pre-computes the sequence→hash mapping ONCE at load time,
         so __getitem__ becomes a simple index lookup (no hashing per access).
         """

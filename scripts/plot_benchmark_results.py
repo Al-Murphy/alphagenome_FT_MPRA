@@ -29,12 +29,27 @@ def setup_plot_style():
     return pal
 
 
-def load_lentimpra_data():
+def load_lentimpra_data(csv_path=None):
     """Load lentiMPRA benchmark data.
-    
+
+    Args:
+        csv_path: Optional path to a CSV with columns model, regime, cell_type,
+            pearson_r (e.g. results/comparison_tables/mpra_comparison_fold0_subset_plot.csv
+            produced by scripts/subset_compare_fold0.py). If None, uses the hardcoded
+            full-test numbers below.
+
     Returns:
-        DataFrame with columns: model, regime, cell_type, pearson_r
+        DataFrame with columns: model, regime, cell_type, pearson_r, model_label
     """
+    if csv_path is not None:
+        df = pd.read_csv(csv_path)
+        df["regime"] = df["regime"].fillna("").astype(str).replace("nan", "")
+        df["model_label"] = df.apply(
+            lambda row: row["model"] if row["regime"] == "" else f"{row['model']} ({row['regime']})",
+            axis=1,
+        )
+        return df
+
     data = [
         # MPRALegNet
         {'model': 'MPRALegNet', 'regime': '', 'cell_type': 'HepG2', 'pearson_r':  0.781},
@@ -111,13 +126,14 @@ def load_starrseq_data():
     return df
 
 
-def plot_lentimpra_benchmark(dat, pal, figsize=(8, 5), include_random_init=False):
+def plot_lentimpra_benchmark(dat, pal, figsize=(8, 5), include_random_init=False, title='lentiMPRA'):
     """Create bar plot for lentiMPRA benchmark.
-    
+
     Args:
         dat: DataFrame with lentiMPRA data
         pal: Color palette
         figsize: Figure size tuple
+        title: Plot title (e.g. 'lentiMPRA (AG fold-0 held-out subset)').
     """
     fig, ax = plt.subplots(1, 1, figsize=figsize)
     
@@ -200,7 +216,7 @@ def plot_lentimpra_benchmark(dat, pal, figsize=(8, 5), include_random_init=False
     
     ax.set_xlabel('Cell Type', fontsize=12)
     ax.set_ylabel('Pearson Correlation', fontsize=12)
-    ax.set_title('lentiMPRA', fontsize=14)
+    ax.set_title(title, fontsize=14)
     # Remove top and right spines for cleaner look
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
@@ -377,6 +393,29 @@ def main():
         help='Figure size for STARR-seq plot (width, height)'
     )
     parser.add_argument(
+        '--lentimpra_csv',
+        type=str,
+        default=None,
+        help='Optional CSV (model, regime, cell_type, pearson_r) to source lentiMPRA '
+             'numbers from instead of the hardcoded full-test values. Use '
+             'results/comparison_tables/mpra_comparison_fold0_subset_plot.csv for the '
+             'AG fold-0 held-out-subset benchmark.'
+    )
+    parser.add_argument(
+        '--lentimpra_title',
+        type=str,
+        default='lentiMPRA',
+        help='Title for the lentiMPRA plot.'
+    )
+    parser.add_argument(
+        '--lentimpra_name',
+        type=str,
+        default='lentimpra_benchmark',
+        help='Output basename for the lentiMPRA plot (no extension). Use a distinct '
+             'name (e.g. lentimpra_benchmark_fold0) when plotting a --lentimpra_csv so '
+             'it does not overwrite the default full-test benchmark plot.'
+    )
+    parser.add_argument(
         '--skip_lentimpra',
         action='store_true',
         help='Skip the lentiMPRA plot'
@@ -406,35 +445,38 @@ def main():
     # Generate lentiMPRA plot
     if not args.skip_lentimpra:
         print("Generating lentiMPRA benchmark plot...")
-        lentimpra_dat = load_lentimpra_data()
+        lentimpra_dat = load_lentimpra_data(csv_path=args.lentimpra_csv)
         fig_lentimpra = plot_lentimpra_benchmark(
             lentimpra_dat,
             pal,
-            figsize=tuple(args.figsize_lentimpra)
+            figsize=tuple(args.figsize_lentimpra),
+            title=args.lentimpra_title
         )
         save_plots(
             fig_lentimpra,
-            output_dir / 'lentimpra_benchmark',
+            output_dir / args.lentimpra_name,
             dpi=args.dpi,
             formats=args.formats
         )
         plt.close(fig_lentimpra)
         print()
-        #plot random initialisation
-        fig_random = plot_lentimpra_benchmark(
-            lentimpra_dat,
-            pal,
-            figsize=tuple(args.figsize_lentimpra),
-            include_random_init=True
-        )
-        save_plots(
-            fig_random,
-            output_dir / 'lentimpra_benchmark_random_init',
-            dpi=args.dpi,
-            formats=args.formats
-        )
-        plt.close(fig_random)
-        print()
+        # Plot random-initialisation variant only for the hardcoded full-test data
+        # (the --lentimpra_csv fold-0 table has no Random Init series).
+        if args.lentimpra_csv is None:
+            fig_random = plot_lentimpra_benchmark(
+                lentimpra_dat,
+                pal,
+                figsize=tuple(args.figsize_lentimpra),
+                include_random_init=True
+            )
+            save_plots(
+                fig_random,
+                output_dir / f'{args.lentimpra_name}_random_init',
+                dpi=args.dpi,
+                formats=args.formats
+            )
+            plt.close(fig_random)
+            print()
     
     # Generate STARR-seq plot
     if not args.skip_starrseq:

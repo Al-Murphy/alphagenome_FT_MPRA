@@ -317,7 +317,34 @@ def main():
              'If provided, the base model will be loaded from this path '
              'instead of using Kaggle.'
     )
-    
+    parser.add_argument(
+        '--base_model_version',
+        type=str,
+        default='all_folds',
+        help="AlphaGenome backbone version for heads-only checkpoints "
+             "(e.g. 'all_folds', 'fold_0'). Must match what was used at training."
+    )
+    parser.add_argument(
+        '--ag_test_filter_version',
+        type=str,
+        default=None,
+        help="If set (e.g. 'fold_0'), restrict the test split to CREs whose hg38 "
+             "position falls inside that AlphaGenome fold's held-out TEST regions."
+    )
+    parser.add_argument(
+        '--coords_path',
+        type=str,
+        default=None,
+        help='Path to lentimpra_hg38_coords.tsv (defaults to '
+             '<data_dir>/lentimpra_hg38_coords.tsv).'
+    )
+    parser.add_argument(
+        '--fold_intervals_path',
+        type=str,
+        default='./data/alphagenome_folds/sequences_human.bed.gz',
+        help='Local cached Borzoi fold BED defining AG fold TEST intervals.'
+    )
+
     args = parser.parse_args()
     
     # Resolve checkpoint directory to an absolute path for Orbax (handles stage1/stage2)
@@ -383,13 +410,13 @@ def main():
     print(f"\nLoading trained model (init_seq_len={init_seq_len} bp)...")
     model = load_checkpoint(
         str(checkpoint_dir),
-        base_model_version='all_folds',
+        base_model_version=args.base_model_version,
         base_checkpoint_path=base_checkpoint_path,
         device=None,  # Will use default device
         init_seq_len=init_seq_len,
     )
     print("✓ Model loaded successfully")
-    
+
     # Create test dataset
     print(f"\nLoading test dataset (cell_type={args.cell_type})...")
     test_dataset = LentiMPRADataset(
@@ -397,7 +424,10 @@ def main():
         cell_type=args.cell_type,
         split='test',
         random_shift=False,
-        reverse_complement=False
+        reverse_complement=False,
+        ag_test_filter_version=args.ag_test_filter_version,
+        coords_path=args.coords_path,
+        fold_intervals_path=args.fold_intervals_path,
     )
     print(f"✓ Test dataset loaded: {len(test_dataset)} samples")
     

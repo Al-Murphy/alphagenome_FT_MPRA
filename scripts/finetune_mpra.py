@@ -276,6 +276,36 @@ def main():
              'instead of using Kaggle.'
     )
     parser.add_argument(
+        '--base_model_version',
+        type=str,
+        default='all_folds',
+        help="AlphaGenome backbone version to load from Kaggle when "
+             "--base_checkpoint_path is not set (e.g. 'all_folds', 'fold_0'). "
+             "Use 'fold_0' to fine-tune on top of the fold-0 single-fold model."
+    )
+    parser.add_argument(
+        '--ag_test_filter_version',
+        type=str,
+        default=None,
+        help="If set (e.g. 'fold_0'), restrict the TEST split to CREs whose hg38 "
+             "position falls inside that AlphaGenome fold's held-out TEST regions. "
+             "Train/val splits are unchanged. Requires the hg38 coordinate table."
+    )
+    parser.add_argument(
+        '--coords_path',
+        type=str,
+        default=None,
+        help='Path to lentimpra_hg38_coords.tsv (defaults to '
+             '<data_dir>/lentimpra_hg38_coords.tsv). Used by --ag_test_filter_version.'
+    )
+    parser.add_argument(
+        '--fold_intervals_path',
+        type=str,
+        default='./data/alphagenome_folds/sequences_human.bed.gz',
+        help='Local cached Borzoi fold BED used to define AG fold TEST intervals. '
+             'If None, alphagenome downloads it from GitHub at runtime.'
+    )
+    parser.add_argument(
         '--random_init',
         action='store_true',
         help='Replace backbone (AlphaGenome encoder) parameters with random '
@@ -539,7 +569,23 @@ def main():
         
         if 'base_checkpoint_path' in config:
             parser.set_defaults(base_checkpoint_path=config.get('base_checkpoint_path', None))
-    
+
+        if 'base_model_version' in config:
+            parser.set_defaults(base_model_version=config.get('base_model_version', 'all_folds'))
+
+        if 'ag_test_filter_version' in config:
+            parser.set_defaults(ag_test_filter_version=config.get('ag_test_filter_version', None))
+
+        if 'coords_path' in config:
+            parser.set_defaults(coords_path=config.get('coords_path', None))
+
+        if 'fold_intervals_path' in config:
+            parser.set_defaults(
+                fold_intervals_path=config.get(
+                    'fold_intervals_path', './data/alphagenome_folds/sequences_human.bed.gz'
+                )
+            )
+
     # Now parse with updated defaults (command-line args will override config)
     import sys
     args = parser.parse_args()
@@ -601,6 +647,9 @@ def main():
     print(f"Use W&B:                    {not args.no_wandb}")
     if args.base_checkpoint_path is not None:
         print(f"Base AlphaGenome checkpoint:{args.base_checkpoint_path}")
+    else:
+        print(f"AG backbone version:        {args.base_model_version}")
+    print(f"AG test-set genomic filter: {args.ag_test_filter_version if args.ag_test_filter_version else 'None'}")
     print(f"Random init (baseline):     {args.random_init}")
     if not args.no_wandb:
         print(f"W&B project:                {args.wandb_project}")
@@ -665,9 +714,9 @@ def main():
         print(f"\nUsing sequence length: {init_seq_len} bp")
     
     # Create model
-    print("\nCreating model with custom heads...")
+    print(f"\nCreating model with custom heads (backbone='{args.base_model_version}')...")
     model_with_custom = create_model_with_custom_heads(
-        'all_folds',
+        args.base_model_version,
         custom_heads=['mpra_head'],
         checkpoint_path=args.base_checkpoint_path,
         use_encoder_output=True,
@@ -785,7 +834,10 @@ def main():
         reverse_complement=False,
         use_cached_embeddings=args.use_cached_embeddings,
         cache_file=test_cache_file,
-        pad_n_bases=args.pad_n_bases
+        pad_n_bases=args.pad_n_bases,
+        ag_test_filter_version=args.ag_test_filter_version,
+        coords_path=args.coords_path,
+        fold_intervals_path=args.fold_intervals_path,
     )
     print(f"✓ Train dataset: {len(train_dataset)} samples")
     if val_dataset:
