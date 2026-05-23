@@ -233,9 +233,10 @@ def main():
     parser.add_argument(
         '--pooling_type',
         type=str,
-        default='sum',
+        default='flatten',
         choices=['mean', 'sum', 'max', 'center', 'flatten'],
-        help='Pooling type for MPRA head: sum/mean/max (pool center window), center (single position), flatten (all positions)'
+        help='Pooling type for MPRA head: sum/mean/max (pool center window), center (single position), flatten (all positions). '
+             'Default flatten matches the optimal configs (uses all encoder positions; center_bp is ignored).'
     )
     parser.add_argument(
         '--pad_n_bases',
@@ -257,8 +258,9 @@ def main():
     parser.add_argument(
         '--do',
         type=float,
-        default=None,
-        help='Dropout rate for the MLP - None means no dropout'
+        default=0.1,
+        help='Dropout rate for the MLP (None means no dropout). Default 0.1 matches the '
+             'optimal configs (per-cell configs use 0.1-0.4).'
     )
     parser.add_argument(
         '--activation',
@@ -371,8 +373,9 @@ def main():
     parser.add_argument(
         '--weight_decay',
         type=float,
-        default=None,
-        help='Weight decay (L2 regularization) for Adam(W) optimizer (e.g., 1e-6)'
+        default=1e-6,
+        help='Weight decay (L2 regularization) for Adam(W) optimizer. Default 1e-6 matches '
+             'the optimal configs. Pass 0 to disable.'
     )
     parser.add_argument(
         '--lr_scheduler',
@@ -515,9 +518,9 @@ def main():
             model_config = config['model']
             parser.set_defaults(
                 center_bp=model_config.get('center_bp', 256),
-                pooling_type=model_config.get('pooling_type', 'sum'),
+                pooling_type=model_config.get('pooling_type', 'flatten'),
                 nl_size=model_config.get('nl_size', '1024'),
-                do=model_config.get('do', None),
+                do=model_config.get('do', 0.1),
                 activation=model_config.get('activation', 'relu'),
             )
         
@@ -527,7 +530,7 @@ def main():
                 num_epochs=train_config.get('num_epochs', 100),
                 learning_rate=train_config.get('learning_rate', 1e-3),
                 optimizer=train_config.get('optimizer', 'adam'),
-                weight_decay=train_config.get('weight_decay', None),
+                weight_decay=train_config.get('weight_decay', 1e-6),
                 gradient_accumulation_steps=train_config.get('gradient_accumulation_steps', 1),
                 gradient_clip=train_config.get('gradient_clip', None),
                 lr_scheduler=train_config.get('lr_scheduler', None),
