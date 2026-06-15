@@ -87,17 +87,19 @@ def main():
     ax.set_xlabel("Encoder stage  (shallow → deep)", fontsize=14)
     ax.set_ylabel("CKA vs pre-finetuning encoder", fontsize=14)
     ax.set_ylim(0.40, 1.03)
-    ax.set_title("Encoder representational drift under fine-tuning", fontsize=15, fontweight="bold")
-    # lighter subtitle giving the assays/probe
-    ax.text(0.5, 1.005, "Drosophila DeepSTARR vs human LentiMPRA fine-tunes · probed on DeepSTARR test sequences",
-            transform=ax.transAxes, ha="center", va="bottom", fontsize=9.5, color="#666666")
 
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
     ax.legend(loc="lower left", frameon=False, fontsize=12, title="Fine-tuned on")
     ax.get_legend().get_title().set_fontsize(11)
 
-    fig.tight_layout()
+    # Bold title + lighter subtitle at the figure level so they never overlap.
+    fig.suptitle("Encoder representational drift under fine-tuning",
+                 fontsize=15, fontweight="bold", y=0.99)
+    fig.text(0.5, 0.925,
+             "Drosophila DeepSTARR vs human LentiMPRA fine-tunes · probed on DeepSTARR test sequences",
+             ha="center", va="top", fontsize=9.5, color="#666666")
+    fig.tight_layout(rect=(0, 0, 1, 0.90))
     save_plots(fig, Path(args.out))
 
 

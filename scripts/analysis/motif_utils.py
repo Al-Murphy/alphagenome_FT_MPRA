@@ -11,12 +11,36 @@ Alphabet order is ACGT throughout (matches the repo's one-hot + JASPAR memes).
 """
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 
 ALPHABET = "ACGT"
+MEME_TOMTOM = Path.home() / "local/meme/bin/tomtom"
+
+
+def run_tomtom(query_meme, db_meme, outdir, thresh=0.1, min_overlap=3, meme_bin=MEME_TOMTOM):
+    """Run MEME-suite TOMTOM (query motifs vs a MEME database). Returns the out dir.
+
+    Parses tomtom.tsv and returns (n_query_with_hit, n_total_matches).
+    """
+    outdir = Path(outdir)
+    outdir.mkdir(parents=True, exist_ok=True)
+    cmd = [str(meme_bin), "-no-ssc", "-oc", str(outdir), "-thresh", str(thresh),
+           "-min-overlap", str(min_overlap), str(query_meme), str(db_meme)]
+    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    tsv = outdir / "tomtom.tsv"
+    qs, n = set(), 0
+    if tsv.exists():
+        for ln in tsv.read_text().splitlines():
+            if not ln or ln.startswith("#") or ln.startswith("Query_ID"):
+                continue
+            p = ln.split("\t")
+            if len(p) >= 2 and p[1]:
+                qs.add(p[0]); n += 1
+    return outdir, len(qs), n
 
 
 # --------------------------------------------------------------------------- #
