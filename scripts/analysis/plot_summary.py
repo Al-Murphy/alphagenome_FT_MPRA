@@ -107,7 +107,10 @@ def _logo(ax, ppm):
 
 
 def _panel_letter(ax, L):
-    ax.text(-0.16, 1.06, L, transform=ax.transAxes, fontsize=15, fontweight="bold", va="bottom", ha="right")
+    # place in FIGURE coords so the offset above the panel top is constant
+    # (axes-relative offsets drift for the half-height panels)
+    pos = ax.get_position()
+    ax.figure.text(pos.x0 - 0.028, pos.y1 + 0.013, L, fontsize=15, fontweight="bold", va="bottom", ha="left")
 
 
 # ---------- panels ----------
@@ -123,10 +126,43 @@ def panel_gap(ax):
     for xi, a, b in zip(x, pr, ft):
         ax.text(xi-w/2, a+0.01, f"{a:.2f}", ha="center", va="bottom", fontsize=8)
         ax.text(xi+w/2, b+0.01, f"{b:.2f}", ha="center", va="bottom", fontsize=8)
-    ax.set_xticks(x); ax.set_xticklabels(["Dev", "Hk"]); ax.set_ylim(0, 1.0)
-    ax.set_ylabel("Test Pearson r"); ax.legend(frameon=False, fontsize=8, loc="upper left")
+    ax.set_xticks(x); ax.set_xticklabels(["Dev", "Hk"]); ax.set_ylim(0.5, 1.0)
+    ax.set_ylabel("Test Pearson's r")
+    ax.legend(frameon=False, fontsize=8, loc="upper left", bbox_to_anchor=(0, 1.0), borderaxespad=0.0)
     ax.spines[["top", "right"]].set_visible(False)
     ax.set_title("Probing vs fine-tuning", fontsize=11, fontweight="bold")
+
+
+def _filters_with_hit(tsv):
+    qs = set()
+    if not Path(tsv).exists():
+        return 0
+    for ln in Path(tsv).read_text().splitlines():
+        if ln.startswith(("Query_ID", "#")) or not ln.strip():
+            continue
+        q = ln.split("\t")[0]
+        if q:
+            qs.add(q)
+    return len(qs)
+
+
+def panel_tomtom_rate(ax):
+    summary = json.loads((REPO / "results/filters/phase1_extract_summary.json").read_text())
+    models = [("pretrained", "Frozen", GRAY), ("fly_ft", "Fly (S2)", TERRA), ("human_ft", "Human", NAVY)]
+    dbs = [("vertebrate", "Vertebrate"), ("fly", "Insect")]
+    x = np.arange(len(dbs)); w = 0.26
+    for i, (m, lab, color) in enumerate(models):
+        n = summary[m]["n_motifs"]
+        vals = [100 * _filters_with_hit(REPO / f"results/filters/tomtom_{m}_vs_{db}/tomtom.tsv") / n
+                for db, _ in dbs]
+        bars = ax.bar(x + (i-1)*w, vals, w, color=color, edgecolor="black", lw=0.8, label=lab)
+        for b, v in zip(bars, vals):
+            ax.text(b.get_x()+b.get_width()/2, v+1, f"{v:.0f}", ha="center", va="bottom", fontsize=8, color=color)
+    ax.set_xticks(x); ax.set_xticklabels([l for _, l in dbs]); ax.set_ylim(0, 70)
+    ax.set_ylabel("Filters matching a known TF (%)")
+    ax.legend(frameon=False, fontsize=7.5, loc="upper right")
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.set_title("Shared partial-motif vocabulary", fontsize=11, fontweight="bold")
 
 
 def panel_conservation(ax):
@@ -187,21 +223,25 @@ def panel_motifs(axes):
 def main():
     sns.set(font_scale=1.0); sns.set_style("white")
     fig = plt.figure(figsize=(16.5, 9))
-    outer = gridspec.GridSpec(2, 1, height_ratios=[1.0, 0.6], hspace=0.62,
+    outer = gridspec.GridSpec(2, 1, height_ratios=[1.0, 0.42], hspace=0.55,
                               left=0.055, right=0.985, top=0.86, bottom=0.06)
-    top = outer[0].subgridspec(1, 4, wspace=0.42)
+    top = outer[0].subgridspec(2, 4, wspace=0.42, hspace=0.7)
     bot = outer[1].subgridspec(1, 4, wspace=0.22)
 
-    axA, axB, axC, axD = (fig.add_subplot(top[i]) for i in range(4))
-    panel_gap(axA); panel_conservation(axB); panel_cka(axC); panel_split(axD)
-    for ax, L in zip((axA, axB, axC, axD), "ABCD"):
+    axA = fig.add_subplot(top[0, 0])   # P0 gap (half height)
+    axB = fig.add_subplot(top[1, 0])   # P1 conservation histogram (half height)
+    axC = fig.add_subplot(top[:, 1])   # P1 shared vocabulary
+    axD = fig.add_subplot(top[:, 2])   # P2 CKA depth
+    axE = fig.add_subplot(top[:, 3])   # P3 split
+    panel_gap(axA); panel_conservation(axB); panel_tomtom_rate(axC); panel_cka(axD); panel_split(axE)
+    for ax, L in zip((axA, axB, axC, axD, axE), "abcde"):
         _panel_letter(ax, L)
 
-    axE = [fig.add_subplot(bot[i]) for i in range(4)]
-    panel_motifs(axE)
-    _panel_letter(axE[0], "E")
+    axF = [fig.add_subplot(bot[i]) for i in range(4)]
+    panel_motifs(axF)
+    _panel_letter(axF[0], "f")
     # short strip label placed in the inter-row gap (centered, clear of x-labels)
-    fig.text(0.5, 0.385, "Example whole motifs built by fine-tuning   "
+    fig.text(0.5, 0.33, "Example whole motifs built by fine-tuning   "
              "(blue = developmental / conserved · red = housekeeping / de novo)",
              fontsize=10, fontweight="bold", color="#333", ha="center")
 
