@@ -26,8 +26,8 @@ import logomaker
 
 REPO = Path(__file__).resolve().parents[2]
 GRAY, NAVY, TERRA, STEEL = "#9E9E9E", "#394165", "#A65141", "#80A0C7"
-TAPS = ["bin_size_1", "bin_size_2", "bin_size_4", "bin_size_8", "bin_size_16", "bin_size_32", "bin_size_64"]
-TAP_BP = ["1", "2", "4", "8", "16", "32", "64"]
+TAPS = ["bin_size_1", "bin_size_2", "bin_size_4", "bin_size_8", "bin_size_16", "bin_size_32", "bin_size_64", "bin_size_128"]
+TAP_BP = ["1", "2", "4", "8", "16", "32", "64", "128"]
 
 # whole-motif examples for panel E: (label, color, meme, motif, q, note)
 MOTIFS = [

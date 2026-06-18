@@ -22,9 +22,9 @@ REPO = Path(__file__).resolve().parents[2]
 
 # 7 encoder taps, shallow -> deep, with human-readable Stem/Block labels + bp.
 TAPS = ["bin_size_1", "bin_size_2", "bin_size_4", "bin_size_8",
-        "bin_size_16", "bin_size_32", "bin_size_64"]
+        "bin_size_16", "bin_size_32", "bin_size_64", "bin_size_128"]
 TAP_LABELS = ["Stem\n1 bp", "Block 1\n2 bp", "Block 2\n4 bp", "Block 3\n8 bp",
-              "Block 4\n16 bp", "Block 5\n32 bp", "Block 6\n64 bp"]
+              "Block 4\n16 bp", "Block 5\n32 bp", "Block 6\n64 bp", "Output\n128 bp"]
 
 # Colors drawn from the repo palette (paper lentiMPRA/STARR panels).
 SERIES = {

@@ -38,14 +38,14 @@ from alphagenome_ft_mpra import DeepSTARRHead, DeepSTARRDataset, EncoderMPRAHead
 REPO = Path(__file__).resolve().parents[2]
 BASE_CKPT = Path.home() / ".cache/kagglehub/models/google/alphagenome/jax/all_folds/1"
 
-# The 7 natural encoder taps (stem + 6 DownResBlocks), shallow -> deep.
+# 8 encoder taps, shallow -> deep: stem (1bp) + 6 DownResBlocks (2-64bp) + final OUTPUT.
+# bin_size_N = the tap whose positions are N bp wide. bin_size_128 is the post-final-pool
+# encoder OUTPUT (the `out` returned by SequenceEncoder = ExtendedEmbeddings.encoder_output,
+# the tensor the task head reads); it is not in the intermediates dict, so taps() injects it.
 TAPS = ["bin_size_1", "bin_size_2", "bin_size_4", "bin_size_8",
-        "bin_size_16", "bin_size_32", "bin_size_64"]
-# bin_size_N = the encoder tap whose positions are N bp wide (Stem + DownResBlocks 0-5).
-# NB: bin_size_64 is 64 bp (Block 6, pre-final-pool); the 128 bp encoder output is a
-# separate post-pool tensor, not one of these intermediates.
+        "bin_size_16", "bin_size_32", "bin_size_64", "bin_size_128"]
 TAP_LABELS = ["Stem (1 bp)", "Block 1 (2 bp)", "Block 2 (4 bp)", "Block 3 (8 bp)",
-              "Block 4 (16 bp)", "Block 5 (32 bp)", "Block 6 (64 bp)"]
+              "Block 4 (16 bp)", "Block 5 (32 bp)", "Block 6 (64 bp)", "Output (128 bp)"]
 
 # Default fine-tuned checkpoints (stage2 = encoder unfrozen) + their head names.
 FLY_CKPT = REPO / "results/models/checkpoints/deepstarr/deepstarr-optimal/stage2"
@@ -111,11 +111,22 @@ def _filter_encoder(tree):
     return {k: v for k, v in tree.items() if "sequence_encoder" in str(k)}
 
 
+# All-None settings: skip remote fasta/gtf/calibration loads (we never need them) — in
+# particular the eager gs:// calibration_scores.pb fetch that fails on compute nodes without
+# GCS/SSL access. Keep BOTH organisms so the organism-embedding shape matches the pretrained
+# (human+mouse) weights.
+_ORG_SETTINGS = {
+    dna_model.Organism.HOMO_SAPIENS: dna_model.OrganismSettings(),
+    dna_model.Organism.MUS_MUSCULUS: dna_model.OrganismSettings(),
+}
+
+
 def _make_template(head_name, device):
     """Full model with the given head NAME — used only for restore-target structure."""
     return create_model_with_heads(
         "all_folds", heads=[head_name], use_encoder_output=True,
         checkpoint_path=str(BASE_CKPT), init_seq_len=256, device=device,
+        organism_settings=_ORG_SETTINGS,
     )
 
 
@@ -174,8 +185,10 @@ class EncoderRunner:
     def taps(self, seq_batch, which=None):
         """seq_batch: (B, L, 4) -> {tap: np.ndarray (B, ...)} for `which` taps (default all)."""
         which = which or TAPS
-        (_out, inter), _ = encoder_fn.apply(self.params, self.state, self._rng, seq_batch)
-        return {t: np.asarray(inter[t], dtype=np.float32) for t in which if t in inter}
+        (out, inter), _ = encoder_fn.apply(self.params, self.state, self._rng, seq_batch)
+        feats = dict(inter)
+        feats["bin_size_128"] = out   # final post-pool encoder output (128 bp), what the head reads
+        return {t: np.asarray(feats[t], dtype=np.float32) for t in which if t in feats}
 
 
 def init_encoder_transform(probe_seq):
