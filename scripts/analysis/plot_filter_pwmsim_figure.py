@@ -1,174 +1,303 @@
 #!/usr/bin/env python3
-"""Single figure combining filter PWM-similarity conservation with top full-attribution motifs.
+"""Single figure for the cross-species motif analysis (AlphaGenome on DeepSTARR).
 
-The main panel reproduces the per-filter conservation histogram for pretrained vs
-fine-tuned encoders. A compact lower row adds a small motif strip for the top
-full-attribution motifs discovered for the fine-tuned fly model.
+a  Encoder CKA vs the frozen encoder across depth (fly vs same-species human).
+b  Paired first-conv filter change: each first-conv kernel (15x4) in the fine-tuned
+   encoder vs the SAME filter (slot) in the frozen encoder, best-offset Pearson
+   similarity of the RAW WEIGHTS (all 768 filters). Plotted as change = 1 - similarity
+   on a log axis (raw weights move little, so the legible comparison is how much).
+c  Per-filter scatter of the same change, fly vs human.
+d  Top TF-MoDISco motifs the fine-tuned model uses (by seqlet support), developmental
+   (top row) and housekeeping (bottom row), labelled by their best JASPAR-insect match.
+
+CPU only. Needs results/cka/phase2_encoder_cka.json, results/filter_qdist/*_conv1_w.npy,
+results/modisco/stage2_*_{motifs.meme,modisco.h5,tomtom...}.
 """
 from __future__ import annotations
 
-import argparse
 import json
 from pathlib import Path
 
-import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
+import h5py
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 import seaborn as sns
+import logomaker
 
 REPO = Path(__file__).resolve().parents[2]
-FILT = REPO / "results/filters"
-OUTDIR = REPO / "results/plots"
-
-SERIES = {
-    "fly_ft": {"label": "Fly (S2)", "color": "#A65141"},
-    "human_ft": {"label": "Human (HepG2)", "color": "#394165"},
-}
-
-
-def setup_plot_style() -> None:
-    sns.set(font_scale=1.1)
-    sns.set_style("white")
-
-
-def save_plots(fig, out_path: Path, dpi: int = 1200, formats=("pdf", "png")) -> None:
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    for fmt in formats:
-        f = out_path.with_suffix(f".{fmt}")
-        fig.savefig(f, format=fmt, dpi=dpi, bbox_inches="tight")
-        print(f"  saved {f}")
+QDIR = REPO / "results/filter_qdist"
+MOD = REPO / "results/modisco"
+FLYDB = REPO / "data/motifs_insects/jaspar_insects_combined.meme"
+GRAY, NAVY, TERRA, STEEL = "#9E9E9E", "#394165", "#A65141", "#80A0C7"
+TAPS = ["bin_size_1", "bin_size_2", "bin_size_4", "bin_size_8",
+        "bin_size_16", "bin_size_32", "bin_size_64", "bin_size_128"]
+TAP_BP = ["1", "2", "4", "8", "16", "32", "64", "128"]
+MAXOFF = 4
+N_MOTIF = 6      # max top motifs per task in panel d
+QMAX = 1e-3      # only label motifs whose closest insect-TF match is at least this confident
+# tomtom best-hit is noisy; fix calls that are biologically wrong and drop redundant ones.
+LABEL_OVERRIDE = {"stage2_dev_p_pattern_0": "Dref"}  # TATCGAT is the DRE element, not pnr (GATA)
+EXCLUDE = {"hr3"}  # AGTGTGACC = same Ohler-1 element already shown as M1BP
 
 
-def parse_meme(path: Path):
-    motifs = []
-    name = None
-    rows = []
-    collecting = False
-    for line in path.read_text().splitlines():
-        s = line.strip()
+# ---------- parsing / metrics ----------
+def parse_meme(path):
+    out, name, collecting, rows = {}, None, False, []
+    for ln in Path(path).read_text().splitlines():
+        s = ln.strip()
         if s.startswith("MOTIF"):
             if name is not None and rows:
-                motifs.append((name, np.array(rows, dtype=float)))
-            name = s.split()[1]
-            rows = []
-            collecting = False
+                out[name] = np.array(rows, float)
+            name, rows, collecting = s.split()[1], [], False
         elif s.startswith("letter-probability"):
-            collecting = True
-            rows = []
+            collecting, rows = True, []
         elif collecting:
-            parts = s.split()
-            if len(parts) == 4:
+            p = s.split()
+            if len(p) == 4:
                 try:
-                    rows.append([float(x) for x in parts])
+                    rows.append([float(x) for x in p])
                 except ValueError:
                     collecting = False
             else:
                 collecting = False
     if name is not None and rows:
-        motifs.append((name, np.array(rows, dtype=float)))
-    return motifs
+        out[name] = np.array(rows, float)
+    return out
 
 
-def draw_logo(ax, ppm, title: str | None = None) -> None:
-    ppm = np.asarray(ppm, dtype=float)
-    if ppm.ndim != 2 or ppm.shape[1] != 4:
-        ax.text(0.5, 0.5, "missing motif", transform=ax.transAxes, ha="center", va="center")
-        ax.set_xticks([])
-        ax.set_yticks([])
-        return
-    x = np.arange(ppm.shape[0])
-    colors = {"A": "#4C78A8", "C": "#F58518", "G": "#54A24B", "T": "#E45756"}
-    bottom = np.zeros(ppm.shape[0])
-    for i, base in enumerate("ACGT"):
-        vals = ppm[:, i]
-        ax.bar(x, vals, bottom=bottom, width=0.8, color=colors[base], edgecolor="none", alpha=0.9)
-        bottom += vals
-    ax.set_xlim(-0.5, ppm.shape[0] - 0.5)
-    ax.set_ylim(0, 1.0)
-    ax.set_xticks([])
-    ax.set_yticks([])
-    for sp in ax.spines.values():
-        sp.set_visible(False)
-    if title:
-        ax.set_title(title, fontsize=9, pad=3)
+def _id2name():
+    m = {}
+    for ln in FLYDB.read_text().splitlines():
+        if ln.startswith("MOTIF"):
+            p = ln.split()
+            if len(p) >= 3:
+                m[p[1]] = p[2]
+    return m
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--out", default=str(OUTDIR / "filter_pwmsim_figure"))
-    args = ap.parse_args()
-    setup_plot_style()
+def _matches(task, id2name):
+    """{query motif -> {tf_name: best q}} from the stage2 tomtom vs insect DB."""
+    tsv = MOD / f"tomtom_stage2_{task}_vs_fly" / "tomtom.tsv"
+    out = {}
+    if tsv.exists():
+        for ln in tsv.read_text().splitlines():
+            if ln.startswith(("Query_ID", "#")) or not ln.strip():
+                continue
+            c = ln.split("\t")
+            if len(c) < 6 or not c[1]:
+                continue
+            try:
+                q = float(c[5])
+            except ValueError:
+                continue
+            tf = id2name.get(c[1], c[1])
+            d = out.setdefault(c[0], {})
+            if tf not in d or q < d[tf]:
+                d[tf] = q
+    return out
 
-    n_inf = {}
-    sumpath = FILT / "phase1_extract_summary.json"
-    if sumpath.exists():
-        s = json.loads(sumpath.read_text())
-        n_inf = {m: s[m]["n_motifs"] for m in ("pretrained", "fly_ft", "human_ft") if m in s}
 
-    fig = plt.figure(figsize=(10.5, 7.3))
-    gs = fig.add_gridspec(2, 2, height_ratios=[1.15, 0.65], hspace=0.32, wspace=0.22)
-    ax_hist = fig.add_subplot(gs[0, :])
-    ax_dev = fig.add_subplot(gs[1, 0])
-    ax_hk = fig.add_subplot(gs[1, 1])
+def _top_motifs(task, n, id2name):
+    """Top-n motifs by seqlet support, keeping only confident, sensible TF matches.
 
-    bins = np.linspace(0.0, 1.0, 41)
-    summary = []
-    for name, sty in SERIES.items():
-        npz = FILT / f"conservation_pretrained_vs_{name}.npz"
-        if not npz.exists():
-            print(f"missing {npz}; run phase1 extraction first")
+    Drops patterns whose best insect match is weak (q >= QMAX); applies LABEL_OVERRIDE
+    for tomtom calls that are biologically wrong (e.g. the TATCGAT element is DRE/Dref,
+    not the GATA factor pnr). For an overridden label the displayed q is that TF's own
+    q for the pattern. Returns [(ppm, tf_label, q), ...]."""
+    meme = parse_meme(MOD / f"stage2_{task}_motifs.meme")
+    matches = _matches(task, id2name)
+    rows = []
+    with h5py.File(MOD / f"stage2_{task}_modisco.h5", "r") as f:
+        for grp, sgn in [("pos_patterns", "p"), ("neg_patterns", "n")]:
+            if grp not in f:
+                continue
+            for pn in f[grp]:
+                ns = int(np.array(f[grp][pn]["seqlets"]["n_seqlets"])[0])
+                mname = f"stage2_{task}_{sgn}_{pn}"
+                mm = matches.get(mname)
+                if mname not in meme or not mm:
+                    continue
+                best_q = min(mm.values())
+                lab = LABEL_OVERRIDE.get(mname, min(mm, key=mm.get))
+                if lab in EXCLUDE or best_q >= QMAX:   # confidence judged on the pattern's best match
+                    continue
+                rows.append((ns, meme[mname], lab, mm.get(lab, best_q)))
+    rows.sort(key=lambda r: r[0], reverse=True)
+    seen, out = set(), []                         # one entry per TF (highest-support pattern)
+    for ns, ppm, lab, q in rows:
+        if lab in seen:
             continue
-        mc = np.load(npz)["matched_corr"]
-        mean = float(mc.mean())
-        frac_hi = float((mc > 0.9).mean())
-        summary.append((name, mean, frac_hi))
-        nlab = f"{n_inf[name]} filters · " if name in n_inf else ""
-        ax_hist.hist(
-            mc,
-            bins=bins,
-            histtype="stepfilled",
-            alpha=0.45,
-            color=sty["color"],
-            edgecolor=sty["color"],
-            linewidth=1.3,
-            label=f"{sty['label']}  ({nlab}mean {mean:.2f}, {frac_hi * 100:.0f}% > 0.9)",
-            zorder=2,
-        )
-        ax_hist.axvline(mean, color=sty["color"], ls=(0, (4, 3)), lw=1.5, zorder=3)
+        seen.add(lab)
+        out.append((ppm, lab, q, ns))
+        if len(out) >= n:
+            break
+    return out
 
-    ax_hist.set_xlim(0.2, 1.02)
-    ax_hist.set_xlabel("Per-filter best-match correlation vs pre-finetuning", fontsize=12)
-    ax_hist.set_ylabel("Number of first-layer filters", fontsize=12)
-    ax_hist.set_title("First-layer conv filters: conserved or remodeled?", fontsize=14, fontweight="bold")
-    ax_hist.spines["top"].set_visible(False)
-    ax_hist.spines["right"].set_visible(False)
-    ax_hist.legend(loc="upper left", frameon=False, fontsize=9.5)
 
-    # Compact lower row: top motifs from full attribution analysis for the fine-tuned fly model.
-    motif_paths = [
-        ("Developmental", REPO / "results/modisco/stage2_dev_motifs.meme"),
-        ("Housekeeping", REPO / "results/modisco/stage2_hk_motifs.meme"),
-    ]
-    for ax, (label, path) in zip((ax_dev, ax_hk), motif_paths):
-        ax.set_title(f"Top full-attribution motifs: {label}", fontsize=10.5, pad=4)
-        ax.set_xticks([])
-        ax.set_yticks([])
-        for sp in ax.spines.values():
-            sp.set_visible(False)
-        if path.exists():
-            motifs = parse_meme(path)
-            if motifs:
-                name, ppm = motifs[0]
-                draw_logo(ax, ppm, title=name)
+def _filter_sim(Wp, Wq, maxoff=MAXOFF):
+    W, best = Wp.shape[0], np.nan
+    for d in range(-maxoff, maxoff + 1):
+        a, b = (Wp[d:], Wq[:W - d]) if d >= 0 else (Wp[:W + d], Wq[-d:])
+        if a.shape[0] < 5:
+            continue
+        av, bv = a.ravel(), b.ravel()
+        if av.std() < 1e-9 or bv.std() < 1e-9:
+            continue
+        r = float(np.corrcoef(av, bv)[0, 1])
+        best = r if np.isnan(best) else max(best, r)
+    return best
+
+
+def _weight_sims():
+    Wf = np.load(QDIR / "pretrained_conv1_w.npy")
+    out = {}
+    for name in ("fly_ft", "human_ft"):
+        Wt = np.load(QDIR / f"{name}_conv1_w.npy")
+        s = {f: _filter_sim(Wf[:, :, f], Wt[:, :, f]) for f in range(Wf.shape[2])}
+        out[name] = {f: v for f, v in s.items() if not np.isnan(v)}
+    return out
+
+
+def _trim_ic(ppm, frac=0.25, pad=1, floor=0.1):
+    ppm = np.clip(ppm, 1e-9, 1)
+    ic = (ppm * np.log2(ppm / 0.25)).sum(1)
+    thr = max(frac * ic.max(), floor)
+    keep = np.where(ic >= thr)[0]
+    if keep.size == 0:
+        return ppm
+    return ppm[max(keep[0] - pad, 0):min(keep[-1] + 1 + pad, ppm.shape[0])]
+
+
+# ---------- panels ----------
+def _cka(ax):
+    cka = json.loads((REPO / "results/cka/phase2_encoder_cka.json").read_text())["cka_vs_pretrained"]
+    x = np.arange(len(TAPS))
+    ax.plot(x, [cka["fly_ft"][t] for t in TAPS], "o-", color=TERRA, lw=2, label="Fly (S2)")
+    ax.plot(x, [cka["human_ft"][t] for t in TAPS], "s--", color=NAVY, lw=2, label="Human (HepG2)")
+    ax.axhline(1.0, color="#bbb", lw=1, ls=(0, (3, 3)))
+    ax.set_xticks(x); ax.set_xticklabels(TAP_BP)
+    ax.set_xlabel("encoder depth (bp/position)"); ax.set_ylabel("CKA vs frozen encoder")
+    ax.set_ylim(0.4, 1.05); ax.legend(frameon=False, fontsize=9, loc="lower left")
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.set_title("Encoder drift by depth", fontsize=12, fontweight="bold")
+
+
+def _dist(ax, sims):
+    nfilt = 0
+    for name, color, lab in [("fly_ft", TERRA, "Fly (S2)"), ("human_ft", NAVY, "Human (HepG2)")]:
+        v = np.clip(1.0 - np.array(list(sims[name].values())), 1e-4, None)
+        nfilt = v.size
+        x = np.sort(v); y = np.arange(1, x.size + 1) / x.size
+        ax.plot(x, y, drawstyle="steps-post", color=color, lw=2,
+                label=f"{lab}\n(median {np.median(v):.3f})")
+        ax.axvline(np.median(v), color=color, ls=(0, (4, 3)), lw=1.3)
+    ax.set_xscale("log")
+    ax.set_xlabel(r"per-filter weight change  (1 $-$ similarity to frozen)")
+    ax.set_ylabel("cumulative fraction of filters")
+    leg = ax.legend(frameon=False, fontsize=8.5, loc="upper left", labelspacing=0.9)
+    ax.figure.canvas.draw()                        # realise legend extent, then tuck n= just below it
+    inv = ax.transAxes.inverted()
+    bb = leg.get_window_extent().transformed(inv)
+    lx = leg.get_lines()[0].get_window_extent().transformed(inv).x0   # align with legend line handles
+    ax.text(lx, bb.y0 - 0.02, f"n = {nfilt} filters", transform=ax.transAxes,
+            va="top", fontsize=8.5, color="#555")
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.set_title("First-conv filter change", fontsize=12, fontweight="bold")
+
+
+def _scatter(ax, sims):
+    common = sorted(set(sims["fly_ft"]) & set(sims["human_ft"]))
+    xh = np.clip(1.0 - np.array([sims["human_ft"][f] for f in common]), 1e-4, None)
+    yf = np.clip(1.0 - np.array([sims["fly_ft"][f] for f in common]), 1e-4, None)
+    lim = [8e-5, 1.0]
+    ax.plot(lim, lim, color="#999", lw=1, ls=(0, (4, 3)))
+    ax.scatter(xh, yf, s=8, alpha=0.35, color="#555", edgecolors="none")
+    ax.set_xscale("log"); ax.set_yscale("log")
+    above = float(np.mean(yf > xh))
+    ax.text(0.04, 0.96, f"{above*100:.0f}% above diagonal\n(fly changed more)",
+            transform=ax.transAxes, ha="left", va="top", fontsize=9, color="#A0392B")
+    ax.text(0.04, 0.80, f"n = {xh.size} filters", transform=ax.transAxes,
+            va="top", fontsize=8.5, color="#555")
+    ax.set_xlabel(r"Human (HepG2) weight change  (1 $-$ sim)")
+    ax.set_ylabel(r"Fly (S2) weight change  (1 $-$ sim)")
+    ax.set_xlim(lim); ax.set_ylim(lim)
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.set_title("Per-filter: fly vs human change", fontsize=12, fontweight="bold")
+
+
+def _logo(ax, ppm, label, q):
+    df = pd.DataFrame(_trim_ic(ppm), columns=["A", "C", "G", "T"])
+    ic = logomaker.transform_matrix(df, from_type="probability", to_type="information")
+    logomaker.Logo(ic, ax=ax, color_scheme="classic", show_spines=False)
+    ax.set_xticks([]); ax.set_yticks([]); ax.set_ylim(0, 2)
+    ax.set_title(label, fontsize=8.5, fontweight="bold", color="#333", pad=2)
+    ax.text(0.5, -0.06, f"$q$={q:.0e}", transform=ax.transAxes, ha="center", va="top",
+            fontsize=7, color="#888")
+
+
+def _motifs(fig, top, bot):
+    """Panel d split into column groups: Shared (dev+hk) | Developmental | Housekeeping."""
+    id2name = _id2name()
+    dev = _top_motifs("dev", 8, id2name)
+    hk = _top_motifs("hk", 8, id2name)
+    devm = {l: (p, q, n) for p, l, q, n in dev}
+    hkm = {l: (p, q, n) for p, l, q, n in hk}
+    shared_labs = sorted((set(devm) & set(hkm)),
+                         key=lambda l: max(devm[l][2], hkm[l][2]), reverse=True)[:2]
+
+    def pick(l):                                   # shared logo from whichever task has more seqlets
+        a, b = devm.get(l), hkm.get(l)
+        return a if a[2] >= b[2] else b
+    shared = [(pick(l)[0], l, pick(l)[1]) for l in shared_labs]
+    dev_only = [(p, l, q) for p, l, q, _n in dev if l not in shared_labs][:4]
+    hk_only = [(p, l, q) for p, l, q, _n in hk if l not in shared_labs][:2]
+
+    gss = fig.add_gridspec(2, 1, left=0.07, right=0.255, top=top, bottom=bot, hspace=0.85)
+    gsd = fig.add_gridspec(2, 2, left=0.315, right=0.735, top=top, bottom=bot, hspace=0.85, wspace=0.3)
+    gsh = fig.add_gridspec(2, 1, left=0.795, right=0.98, top=top, bottom=bot, hspace=0.85)
+
+    def place(gs, items, ncol):
+        for i in range(gs.nrows * ncol):
+            r, c = divmod(i, ncol)
+            ax = fig.add_subplot(gs[r, c])
+            if i < len(items):
+                _logo(ax, *items[i])
             else:
-                ax.text(0.5, 0.5, f"No motifs in {path.name}", transform=ax.transAxes, ha="center", va="center")
-        else:
-            ax.text(0.5, 0.5, f"Missing {path.name}", transform=ax.transAxes, ha="center", va="center")
+                ax.axis("off")
+    place(gss, shared, 1); place(gsd, dev_only, 2); place(gsh, hk_only, 1)
 
-    fig.suptitle("Filter PWM similarity and full-attribution motif recovery", fontsize=15, fontweight="bold")
-    fig.tight_layout(rect=[0, 0, 1, 0.97])
-    save_plots(fig, Path(args.out))
-    for name, mean, frac in summary:
-        print(f"  {name}: mean matched corr={mean:.3f}, frac>0.9={frac:.3f}")
+    hy = top + 0.025
+    fig.text(0.1625, hy, "Shared (dev + hk)", ha="center", fontsize=10.5, fontweight="bold", color="#5A5A5A")
+    fig.text(0.525, hy, "Developmental", ha="center", fontsize=10.5, fontweight="bold", color="#2E6E4E")
+    fig.text(0.8875, hy, "Housekeeping", ha="center", fontsize=10.5, fontweight="bold", color="#8A5A2B")
+
+
+def main():
+    sns.set(font_scale=1.0); sns.set_style("white")
+    sims = _weight_sims()
+    fig = plt.figure(figsize=(16, 9))
+    gs_top = fig.add_gridspec(1, 3, left=0.06, right=0.98, top=0.90, bottom=0.56, wspace=0.30)
+    axA = fig.add_subplot(gs_top[0, 0]); axB = fig.add_subplot(gs_top[0, 1]); axC = fig.add_subplot(gs_top[0, 2])
+    _cka(axA); _dist(axB, sims); _scatter(axC, sims)
+    _motifs(fig, top=0.40, bot=0.05)
+    for ax, L in zip((axA, axB, axC), "abc"):
+        ax.text(-0.13, 1.06, L, transform=ax.transAxes, fontsize=15, fontweight="bold", va="bottom")
+    fig.text(0.06, 0.475, "d", fontsize=15, fontweight="bold")
+    fig.text(0.55, 0.475, "Sequence motifs the fine-tuned model relies on "
+             "(TF-MoDISco on attributions; labelled by closest insect TF, $q$)",
+             ha="center", fontsize=11, fontweight="bold", color="#333")
+    fig.suptitle("Cross-species fine-tuning: encoder drift, first-conv filter change and learned motifs",
+                 fontsize=14.5, fontweight="bold", y=0.975)
+    for fmt in ("png", "pdf"):
+        f = REPO / f"results/filter_qdist/filter_motif_figure.{fmt}"
+        fig.savefig(f, dpi=1200 if fmt == "pdf" else 220, bbox_inches="tight")
+        print(f"saved {f}")
+    for name in ("fly_ft", "human_ft"):
+        v = 1 - np.array(list(sims[name].values()))
+        print(f"  {name}: median weight CHANGE={np.median(v):.4f}  n={v.size}")
 
 
 if __name__ == "__main__":
