@@ -32,6 +32,7 @@ QDIR = REPO / "results/filter_qdist"
 MOD = REPO / "results/modisco"
 FLYDB = REPO / "data/motifs_insects/jaspar_insects_combined.meme"
 GRAY, NAVY, TERRA, STEEL = "#9E9E9E", "#394165", "#A65141", "#80A0C7"
+DEVC, HKC = "#2E6E4E", "#A65141"          # developmental (green) / housekeeping (brown) colour key
 TAPS = ["bin_size_1", "bin_size_2", "bin_size_4", "bin_size_8",
         "bin_size_16", "bin_size_32", "bin_size_64", "bin_size_128"]
 TAP_BP = ["1", "2", "4", "8", "16", "32", "64", "128"]
@@ -78,9 +79,9 @@ def _id2name():
     return m
 
 
-def _matches(task, id2name):
-    """{query motif -> {tf_name: best q}} from the stage2 tomtom vs insect DB."""
-    tsv = MOD / f"tomtom_stage2_{task}_vs_fly" / "tomtom.tsv"
+def _matches(stage, task, id2name):
+    """{query motif -> {tf_name: best q}} from the {stage} tomtom vs insect DB."""
+    tsv = MOD / f"tomtom_{stage}_{task}_vs_fly" / "tomtom.tsv"
     out = {}
     if tsv.exists():
         for ln in tsv.read_text().splitlines():
@@ -100,41 +101,29 @@ def _matches(task, id2name):
     return out
 
 
-def _top_motifs(task, n, id2name):
-    """Top-n motifs by seqlet support, keeping only confident, sensible TF matches.
-
-    Drops patterns whose best insect match is weak (q >= QMAX); applies LABEL_OVERRIDE
-    for tomtom calls that are biologically wrong (e.g. the TATCGAT element is DRE/Dref,
-    not the GATA factor pnr). For an overridden label the displayed q is that TF's own
-    q for the pattern. Returns [(ppm, tf_label, q), ...]."""
-    meme = parse_meme(MOD / f"stage2_{task}_motifs.meme")
-    matches = _matches(task, id2name)
-    rows = []
-    with h5py.File(MOD / f"stage2_{task}_modisco.h5", "r") as f:
+def _pattern_for(stage, task, tf, id2name, qmax=QMAX):
+    """Highest-support motif in ({stage},{task}) whose best insect match is `tf`
+    (confidently, q<qmax). Returns (ppm, q) or None if this stage did not assemble it."""
+    if tf is None:
+        return None
+    meme = parse_meme(MOD / f"{stage}_{task}_motifs.meme")
+    matches = _matches(stage, task, id2name)
+    best, best_ns = None, -1
+    with h5py.File(MOD / f"{stage}_{task}_modisco.h5", "r") as f:
         for grp, sgn in [("pos_patterns", "p"), ("neg_patterns", "n")]:
             if grp not in f:
                 continue
             for pn in f[grp]:
-                ns = int(np.array(f[grp][pn]["seqlets"]["n_seqlets"])[0])
-                mname = f"stage2_{task}_{sgn}_{pn}"
+                mname = f"{stage}_{task}_{sgn}_{pn}"
                 mm = matches.get(mname)
                 if mname not in meme or not mm:
                     continue
-                best_q = min(mm.values())
-                lab = LABEL_OVERRIDE.get(mname, min(mm, key=mm.get))
-                if lab in EXCLUDE or best_q >= QMAX:   # confidence judged on the pattern's best match
+                if min(mm, key=mm.get) != tf or mm[tf] >= qmax:   # tf must be THE best, confident match
                     continue
-                rows.append((ns, meme[mname], lab, mm.get(lab, best_q)))
-    rows.sort(key=lambda r: r[0], reverse=True)
-    seen, out = set(), []                         # one entry per TF (highest-support pattern)
-    for ns, ppm, lab, q in rows:
-        if lab in seen:
-            continue
-        seen.add(lab)
-        out.append((ppm, lab, q, ns))
-        if len(out) >= n:
-            break
-    return out
+                ns = int(np.array(f[grp][pn]["seqlets"]["n_seqlets"])[0])
+                if ns > best_ns:
+                    best_ns, best = ns, (meme[mname], mm[tf])
+    return best
 
 
 def _filter_sim(Wp, Wq, maxoff=MAXOFF):
@@ -169,6 +158,30 @@ def _trim_ic(ppm, frac=0.25, pad=1, floor=0.1):
     if keep.size == 0:
         return ppm
     return ppm[max(keep[0] - pad, 0):min(keep[-1] + 1 + pad, ppm.shape[0])]
+
+
+def _revcomp(ppm):
+    return ppm[::-1, ::-1]                          # reverse positions + complement (ACGT->TGCA)
+
+
+def _ol_corr(A, B):
+    """Best gapless-overlap Pearson between two PPMs (background-subtracted, IC-trimmed)."""
+    A, B = _trim_ic(A) - 0.25, _trim_ic(B) - 0.25
+    la, lb, best = len(A), len(B), -2.0
+    for d in range(-(la - 4), (lb - 4) + 1):
+        ia, ib = max(0, -d), max(0, d)
+        ov = min(la - ia, lb - ib)
+        if ov < 4:
+            continue
+        a, b = A[ia:ia + ov].ravel(), B[ib:ib + ov].ravel()
+        if a.std() > 1e-9 and b.std() > 1e-9:
+            best = max(best, float(np.corrcoef(a, b)[0, 1]))
+    return best
+
+
+def _orient(P, Q):
+    """Return P or its reverse complement, whichever aligns better to Q (same-strand display)."""
+    return _revcomp(P) if _ol_corr(_revcomp(P), Q) > _ol_corr(P, Q) else P
 
 
 # ---------- panels ----------
@@ -228,69 +241,137 @@ def _scatter(ax, sims):
     ax.set_title("Per-filter: fly vs human change", fontsize=12, fontweight="bold")
 
 
-def _logo(ax, ppm, label, q):
+# panel d columns: (display name, task, probing-TF, fine-tuned-TF). None = not assembled at that stage.
+CONSERVED = [("GATA", "dev", "srp", "GATAe"), ("AP-1", "dev", "Jra", "Jra"),
+             ("STAT", "dev", "Stat92E", "Stat92E"), ("E-box", "hk", "crp", "crp")]
+DE_NOVO = [("DRE", "hk", None, "Dref"), ("M1BP", "hk", None, "M1BP")]
+
+
+def _logo_cell(ax, res):
+    """Draw one motif logo (res = (ppm, q)) or a 'not detected' placeholder (res = None)."""
+    if res is None:
+        ax.set_xticks([]); ax.set_yticks([])
+        for s in ax.spines.values():
+            s.set_visible(False)
+        ax.text(0.5, 0.5, "not\ndetected", transform=ax.transAxes, ha="center", va="center",
+                fontsize=8, style="italic", color="#c2c2c2")
+        return
+    ppm, q = res
     df = pd.DataFrame(_trim_ic(ppm), columns=["A", "C", "G", "T"])
     ic = logomaker.transform_matrix(df, from_type="probability", to_type="information")
     logomaker.Logo(ic, ax=ax, color_scheme="classic", show_spines=False)
     ax.set_xticks([]); ax.set_yticks([]); ax.set_ylim(0, 2)
-    ax.set_title(label, fontsize=8.5, fontweight="bold", color="#333", pad=2)
-    ax.text(0.5, -0.06, f"$q$={q:.0e}", transform=ax.transAxes, ha="center", va="top",
-            fontsize=7, color="#888")
+    ax.text(0.5, -0.08, f"$q$={q:.0e}", transform=ax.transAxes, ha="center", va="top",
+            fontsize=6.5, color="#999")
 
 
 def _motifs(fig, top, bot):
-    """Panel d split into column groups: Shared (dev+hk) | Developmental | Housekeeping."""
+    """Panel d: same whole motifs before (probing = frozen encoder) vs after fine-tuning,
+    split into those the pretrained encoder already assembled (conserved) vs learned de novo."""
     id2name = _id2name()
-    dev = _top_motifs("dev", 8, id2name)
-    hk = _top_motifs("hk", 8, id2name)
-    devm = {l: (p, q, n) for p, l, q, n in dev}
-    hkm = {l: (p, q, n) for p, l, q, n in hk}
-    shared_labs = sorted((set(devm) & set(hkm)),
-                         key=lambda l: max(devm[l][2], hkm[l][2]), reverse=True)[:2]
+    gsc = fig.add_gridspec(2, len(CONSERVED), left=0.10, right=0.66, top=top, bottom=bot, hspace=0.55, wspace=0.28)
+    gsd = fig.add_gridspec(2, len(DE_NOVO), left=0.735, right=0.98, top=top, bottom=bot, hspace=0.55, wspace=0.28)
 
-    def pick(l):                                   # shared logo from whichever task has more seqlets
-        a, b = devm.get(l), hkm.get(l)
-        return a if a[2] >= b[2] else b
-    shared = [(pick(l)[0], l, pick(l)[1]) for l in shared_labs]
-    dev_only = [(p, l, q) for p, l, q, _n in dev if l not in shared_labs][:4]
-    hk_only = [(p, l, q) for p, l, q, _n in hk if l not in shared_labs][:2]
+    def block(gs, cols, rowlab):
+        for ci, (name, task, ptf, ftf) in enumerate(cols):
+            pr = _pattern_for("stage1", task, ptf, id2name)
+            ft = _pattern_for("stage2", task, ftf, id2name)
+            if pr and ft:                          # show both on the same strand
+                pr = (_orient(pr[0], ft[0]), pr[1])
+            for ri, res in enumerate([pr, ft]):
+                ax = fig.add_subplot(gs[ri, ci])
+                _logo_cell(ax, res)
+                if ri == 0:
+                    ax.set_title(name, fontsize=9.5, fontweight="bold", pad=4,
+                                 color=DEVC if task == "dev" else HKC)
+                if ci == 0 and rowlab:
+                    ax.set_ylabel(["Probing\n(frozen)", "Fine-tuned"][ri], fontsize=9,
+                                  fontweight="bold", color="#555", rotation=90, labelpad=8)
+    block(gsc, CONSERVED, True); block(gsd, DE_NOVO, False)
 
-    gss = fig.add_gridspec(2, 1, left=0.07, right=0.255, top=top, bottom=bot, hspace=0.85)
-    gsd = fig.add_gridspec(2, 2, left=0.315, right=0.735, top=top, bottom=bot, hspace=0.85, wspace=0.3)
-    gsh = fig.add_gridspec(2, 1, left=0.795, right=0.98, top=top, bottom=bot, hspace=0.85)
+    hy = top + 0.028
+    fig.text((0.10 + 0.66) / 2, hy, "Already present in pretrained encoder (conserved)",
+             ha="center", fontsize=10.5, fontweight="bold", color="#333")
+    fig.text((0.735 + 0.98) / 2, hy, "Learned de novo",
+             ha="center", fontsize=10.5, fontweight="bold", color="#333")
 
-    def place(gs, items, ncol):
-        for i in range(gs.nrows * ncol):
-            r, c = divmod(i, ncol)
-            ax = fig.add_subplot(gs[r, c])
-            if i < len(items):
-                _logo(ax, *items[i])
-            else:
-                ax.axis("off")
-    place(gss, shared, 1); place(gsd, dev_only, 2); place(gsh, hk_only, 1)
 
-    hy = top + 0.025
-    fig.text(0.1625, hy, "Shared (dev + hk)", ha="center", fontsize=10.5, fontweight="bold", color="#5A5A5A")
-    fig.text(0.525, hy, "Developmental", ha="center", fontsize=10.5, fontweight="bold", color="#2E6E4E")
-    fig.text(0.8875, hy, "Housekeeping", ha="center", fontsize=10.5, fontweight="bold", color="#8A5A2B")
+ATTR = [("DRE", "hk", "TATCGATA"), ("M1BP", "hk", "AGTGTGACC")]   # panel e de novo examples
+
+
+def _attr_data(task, motif, half=13):
+    """Highest FT-vs-probing contrast occurrence of `motif`; returns per-base attribution
+    (onehot*hyp) windows for probing and fine-tuned on the SAME enhancer + motif span."""
+    s1 = np.load(MOD / f"stage1_{task}.npz"); s2 = np.load(MOD / f"stage2_{task}.npz")
+    oh, h1, h2 = s1["onehot"], s1["hyp"], s2["hyp"]
+    c1, c2 = (oh * h1).sum(-1), (oh * h2).sum(-1)
+    ml = len(motif); rc = motif.translate(str.maketrans("ACGT", "TGCA"))[::-1]
+    seqs = ["".join("ACGT"[b] for b in x) for x in oh.argmax(-1)]
+    best, bestd = None, -1e9
+    for i, sq in enumerate(seqs):
+        for m in ({motif} if motif == rc else {motif, rc}):
+            j = sq.find(m)
+            if j >= 0 and (c2[i, j:j + ml].sum() - c1[i, j:j + ml].sum()) > bestd:
+                bestd, best = c2[i, j:j + ml].sum() - c1[i, j:j + ml].sum(), (i, j, m)
+    i, j, m = best
+    c = j + ml // 2
+    lo, hi = max(0, c - half), min(oh.shape[1], c + half + 1)
+    prw, ftw = (oh * h1)[i, lo:hi], (oh * h2)[i, lo:hi]
+    span = (j - lo, j - lo + ml)
+    if m == rc:                                    # display on the motif's + strand
+        prw, ftw = prw[::-1, ::-1], ftw[::-1, ::-1]
+        W = prw.shape[0]; span = (W - span[1], W - span[0])
+    return prw, ftw, span
+
+
+def _attr_logo(ax, contrib, ylim, span):
+    ax.axvspan(span[0] - 0.5, span[1] - 0.5, color="#F2D24E", alpha=0.28, zorder=0)
+    logomaker.Logo(pd.DataFrame(contrib, columns=["A", "C", "G", "T"]), ax=ax,
+                   color_scheme="classic", flip_below=False, show_spines=False)
+    ax.axhline(0, color="#bbb", lw=0.6, zorder=1)
+    ax.set_xticks([]); ax.set_yticks([]); ax.set_ylim(*ylim)
+
+
+def _attr_panel(fig, top, bot):
+    gs = fig.add_gridspec(2, len(ATTR), left=0.11, right=0.90, top=top, bottom=bot, hspace=0.28, wspace=0.16)
+    for ci, (name, task, motif) in enumerate(ATTR):
+        pr, ft, span = _attr_data(task, motif)
+        mag = max(np.abs(pr).max(), np.abs(ft).max())
+        ylim = (-0.1 * mag, 1.05 * mag)
+        for ri, contrib in enumerate([pr, ft]):
+            ax = fig.add_subplot(gs[ri, ci])
+            _attr_logo(ax, contrib, ylim, span)
+            if ri == 0:
+                ax.set_title(f"{name}  (housekeeping)", fontsize=9.5, fontweight="bold", color=HKC, pad=4)
+            if ci == 0:
+                ax.set_ylabel(["Probing\n(frozen)", "Fine-tuned"][ri], fontsize=9,
+                              fontweight="bold", color="#555", rotation=90, labelpad=8)
 
 
 def main():
     sns.set(font_scale=1.0); sns.set_style("white")
     sims = _weight_sims()
-    fig = plt.figure(figsize=(16, 9))
-    gs_top = fig.add_gridspec(1, 3, left=0.06, right=0.98, top=0.90, bottom=0.56, wspace=0.30)
+    fig = plt.figure(figsize=(16, 13))
+    gs_top = fig.add_gridspec(1, 3, left=0.06, right=0.98, top=0.94, bottom=0.71, wspace=0.30)
     axA = fig.add_subplot(gs_top[0, 0]); axB = fig.add_subplot(gs_top[0, 1]); axC = fig.add_subplot(gs_top[0, 2])
     _cka(axA); _dist(axB, sims); _scatter(axC, sims)
-    _motifs(fig, top=0.40, bot=0.05)
+    _motifs(fig, top=0.59, bot=0.43)
+    _attr_panel(fig, top=0.35, bot=0.22)
     for ax, L in zip((axA, axB, axC), "abc"):
-        ax.text(-0.13, 1.06, L, transform=ax.transAxes, fontsize=15, fontweight="bold", va="bottom")
-    fig.text(0.06, 0.475, "d", fontsize=15, fontweight="bold")
-    fig.text(0.55, 0.475, "Sequence motifs the fine-tuned model relies on "
-             "(TF-MoDISco on attributions; labelled by closest insect TF, $q$)",
+        ax.text(-0.13, 1.04, L, transform=ax.transAxes, fontsize=15, fontweight="bold", va="bottom")
+    # panel d header + dev/hk colour key
+    fig.text(0.028, 0.655, "d", fontsize=15, fontweight="bold")
+    fig.text(0.50, 0.655, "Whole motifs before (probing) vs after fine-tuning",
+             ha="center", fontsize=11, fontweight="bold", color="#333")
+    fig.text(0.405, 0.637, "developmental", ha="right", fontsize=8.5, fontweight="bold", color=DEVC)
+    fig.text(0.42, 0.637, "|", ha="center", fontsize=8.5, color="#bbb")
+    fig.text(0.435, 0.637, "housekeeping", ha="left", fontsize=8.5, fontweight="bold", color=HKC)
+    # panel e header
+    fig.text(0.028, 0.39, "e", fontsize=15, fontweight="bold")
+    fig.text(0.50, 0.39, "Per-base attribution on enhancers containing a de novo motif",
              ha="center", fontsize=11, fontweight="bold", color="#333")
     fig.suptitle("Cross-species fine-tuning: encoder drift, first-conv filter change and learned motifs",
-                 fontsize=14.5, fontweight="bold", y=0.975)
+                 fontsize=14.5, fontweight="bold", y=0.985)
     for fmt in ("png", "pdf"):
         f = REPO / f"results/filter_qdist/filter_motif_figure.{fmt}"
         fig.savefig(f, dpi=1200 if fmt == "pdf" else 220, bbox_inches="tight")
