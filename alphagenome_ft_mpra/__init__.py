@@ -13,8 +13,13 @@ from .data import (
     DeepSTARRDataset,
     STARRSeqDataLoader,
     EpisomalMPRADataset,
+    PlantStarrSeqDataset,
 )
 from .episomal_utils import get_episomal_test_sets
+from .plant_starrseq_utils import (
+    build_plant_starrseq_dataset,
+    data_is_present as plant_starrseq_data_is_present,
+)
 from .oracle import MPRAOracle, load_oracle
 from .training import train, validate
 
@@ -38,7 +43,10 @@ __all__ = [
     'DeepSTARRDataset',
     'STARRSeqDataLoader',
     'EpisomalMPRADataset',
+    'PlantStarrSeqDataset',
     'get_episomal_test_sets',
+    'build_plant_starrseq_dataset',
+    'plant_starrseq_data_is_present',
     'MPRAOracle',
     'load_oracle',
     'train',

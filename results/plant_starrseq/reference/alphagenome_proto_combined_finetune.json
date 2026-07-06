@@ -1,0 +1,12 @@
+{
+  "model": "alphagenome",
+  "tissue": "proto",
+  "mode": "combined",
+  "method": "finetune",
+  "stage": "stage2",
+  "test_pearson": 0.8795,
+  "val_pearson": 0.9026,
+  "species": null,
+  "source_commit": "65d956c",
+  "source_checkpoint": "/grid/koo/home/duran/autotune-worktrees/ag-jax-proto-combined/experiments/starrseq-proto-alphagenome-jax/checkpoints/65d956c/stage2/best.pt"
+}

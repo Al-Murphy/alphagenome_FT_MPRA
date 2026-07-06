@@ -1,0 +1,12 @@
+{
+  "model": "alphagenome",
+  "tissue": "leaf",
+  "mode": "combined",
+  "method": "finetune",
+  "stage": "stage2",
+  "test_pearson": 0.8899,
+  "val_pearson": 0.9191,
+  "species": null,
+  "source_commit": "e2c6417",
+  "source_checkpoint": "/grid/koo/home/duran/autotune-worktrees/ag-jax-leaf-combined/experiments/starrseq-leaf-alphagenome-jax/checkpoints/e2c6417/stage2/best.pt"
+}

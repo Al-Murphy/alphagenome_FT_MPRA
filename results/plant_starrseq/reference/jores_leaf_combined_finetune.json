@@ -1,0 +1,12 @@
+{
+  "model": "jores",
+  "tissue": "leaf",
+  "mode": "combined",
+  "method": "finetune",
+  "stage": "single",
+  "test_pearson": 0.8632,
+  "val_pearson": 0.8776,
+  "species": null,
+  "source_commit": "828c382",
+  "source_checkpoint": "/grid/koo/home/duran/autotune-worktrees/ntv3-proto-combined/experiments/starrseq-leaf-jores-cnn-combined/checkpoints/828c382/best.pt"
+}

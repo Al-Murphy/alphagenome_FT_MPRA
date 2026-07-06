@@ -1,0 +1,56 @@
+{
+  "_comment": "Jores21 plant STARR-seq, NTv3-post (conv-tower features) + attention-pool MPRA head. Species-conditioned: leaf=arabidopsis_thaliana(19), proto=zea_mays(22). Requires the nucleotide_transformer_v3 env (not the repo uv env).",
+  "_source": "Final plant STARR-seq sweep (test-r: leaf combined 0.8822, proto combined 0.8756).",
+  "model": "ntv3",
+  "tissue": "leaf",
+  "mode": "combined",
+  "data": {
+    "data_path": "./data/jores_plant_starrseq",
+    "batch_size": 128,
+    "random_shift": true,
+    "random_shift_likelihood": 0.5,
+    "max_shift": 15,
+    "reverse_complement": true,
+    "reverse_complement_likelihood": 0.5
+  },
+  "model_params": {
+    "backbone": "ntv3",
+    "model_name": "NTv3_650M_post",
+    "head_pooling": "attention",
+    "hidden_size": 1024,
+    "n_heads": 4,
+    "do": 0.1,
+    "species_name": "arabidopsis_thaliana",
+    "species_token": 19,
+    "use_bfloat16": true
+  },
+  "training": {
+    "num_epochs": 100,
+    "learning_rate": 0.0005,
+    "optimizer": "adamw",
+    "weight_decay": 0.0,
+    "gradient_accumulation_steps": 1,
+    "gradient_clip": 1.0,
+    "warmup_ratio": 0.05,
+    "warmdown_ratio": 0.3,
+    "final_lr_frac": 0.01,
+    "early_stopping_patience": 5,
+    "val_eval_frequency": 4,
+    "stage1_time_budget": 250
+  },
+  "two_stage": {
+    "enabled": true,
+    "second_stage_lr": 0.0003,
+    "second_stage_epochs": 50,
+    "backbone_lr_scale": 0.1,
+    "extra_time_budget": 2000
+  },
+  "checkpointing": {
+    "checkpoint_dir": "./results/plant_starrseq/ntv3"
+  },
+  "wandb": {
+    "enabled": false,
+    "project": "plant-starrseq-ntv3",
+    "wandb_name": null
+  }
+}

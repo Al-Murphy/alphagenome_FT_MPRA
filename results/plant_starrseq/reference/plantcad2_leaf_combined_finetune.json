@@ -1,0 +1,12 @@
+{
+  "model": "plantcad2",
+  "tissue": "leaf",
+  "mode": "combined",
+  "method": "finetune",
+  "stage": "stage2",
+  "test_pearson": 0.8927,
+  "val_pearson": 0.9096,
+  "species": null,
+  "source_commit": "62fe992",
+  "source_checkpoint": "/grid/koo/home/duran/autotune/experiments/starrseq-leaf-plantcad2/checkpoints/62fe992/stage2/best.pt"
+}

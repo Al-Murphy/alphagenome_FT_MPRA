@@ -1,0 +1,12 @@
+{
+  "model": "plantcad2",
+  "tissue": "proto",
+  "mode": "combined",
+  "method": "finetune",
+  "stage": "stage2",
+  "test_pearson": 0.8481,
+  "val_pearson": 0.8424,
+  "species": null,
+  "source_commit": "62fe992",
+  "source_checkpoint": "/grid/koo/home/duran/autotune/experiments/starrseq-proto-plantcad2/checkpoints/62fe992/stage2/best.pt"
+}
