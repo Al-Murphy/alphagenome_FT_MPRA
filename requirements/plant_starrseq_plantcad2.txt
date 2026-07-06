@@ -1,0 +1,43 @@
+# Requirements for the PlantCAD2 plant STARR-seq runner
+#   scripts/finetune_plantcad2_plant_starrseq.py
+#
+# PlantCAD2 is a Caduceus / Mamba2 model: it needs a CUDA-12.4 torch build plus
+# the mamba-ssm + causal-conv1d CUDA kernels. This CONFLICTS with the NTv3 env
+# (jax[cuda12]==0.9.2 + CPU torch) and with the default AlphaGenome env, so use
+# its OWN dedicated environment (Python 3.12).
+#
+# IMPORTANT — two-step install. mamba-ssm reads `torch` at build time, so it must
+# be installed AFTER torch (and is intentionally NOT listed below). See
+# docs/plant_starrseq_environments.md for the exact commands (including the
+# no-nvcc prebuilt-wheel fallback).
+#
+# Install torch from the cu124 index:
+#   pip install torch --index-url https://download.pytorch.org/whl/cu124
+
+torch>=2.0.0,<2.7
+
+# HF stack — the PlantCAD2 config was saved with transformers 4.47.x. Pin <5:
+# transformers 5.x removed `all_tied_weights_keys`, breaking the model's shipped
+# modeling_caduceus.py.
+transformers>=4.47,<5
+tokenizers>=0.21,<0.22
+huggingface-hub>=0.24,<1.0
+safetensors
+einops
+
+# build tooling for the mamba-ssm / causal-conv1d step
+ninja
+packaging
+wheel
+setuptools
+
+# data / metrics
+numpy
+pandas
+scipy
+tqdm
+
+# ── install these LAST, after torch is present (do NOT put them above) ──
+#   pip install --no-build-isolation "causal-conv1d>=1.4" "mamba-ssm>=2.0"
+# If the cluster has no CUDA toolchain (nvcc), use the prebuilt wheels instead —
+# see docs/plant_starrseq_environments.md.

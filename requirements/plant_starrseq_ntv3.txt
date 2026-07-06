@@ -1,0 +1,31 @@
+# Requirements for the NTv3-post plant STARR-seq runner
+#   scripts/finetune_ntv3_plant_starrseq.py
+#
+# Pure JAX + Flax NNX — NO torch. This CONFLICTS with the PlantCAD2 env (which
+# needs a CUDA-12.4 torch build + mamba-ssm) and with the repo's default
+# AlphaGenome env, so install it in its OWN dedicated environment (Python 3.12).
+# See docs/plant_starrseq_environments.md for the full recipe.
+#
+# GPU note: jax[cuda12] pulls the CUDA 12 wheels; at RUN time JAX needs
+#   export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
+
+jax[cuda12]==0.9.2
+flax>=0.11
+optax
+chex
+jaxtyping
+
+# backbone — provides `nucleotide_transformer_v3` (the post-trained NTv3 factory).
+# Not on PyPI; installed from the InstaDeep repo.
+nucleotide_transformer @ git+https://github.com/instadeepai/nucleotide-transformer.git
+
+# HF stack for weight downloads
+huggingface-hub
+transformers>=4.40
+safetensors
+
+# data / metrics
+numpy
+pandas
+scipy
+tqdm
