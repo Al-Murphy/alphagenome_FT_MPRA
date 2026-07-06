@@ -103,9 +103,10 @@ live.
     grid (finetune + probe test Pearson r) into `results/plant_starrseq/summary.{md,csv}`.
     Reads the committed reference metrics by default; `--run <model>` recomputes an
     installed model's cells live.
-  - **`plot_plant_starrseq_benchmark_results.py`** – Grouped bar charts of the same
-    grid (rows = finetune / probe, cols = leaf / proto) into
-    `results/plant_starrseq/plots/plant_starrseq_benchmark.{png,pdf}`.
+  - **`plot_plant_starrseq_benchmark_results.py`** – Combined-mode benchmark bar
+    chart (test Pearson r by tissue, probing vs fine-tuned, one hue family per
+    model) styled like `plot_benchmark_results.py`, into
+    `results/plant_starrseq/plots/plant_starrseq_benchmark.png`.
 
 ```bash
 # 1. build the dataset
