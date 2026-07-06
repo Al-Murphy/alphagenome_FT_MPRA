@@ -9,13 +9,13 @@ default environment; the other three each need a dedicated env.
 | Model | Runner | Environment | Requirements | Why separate |
 |---|---|---|---|---|
 | AlphaGenome | `scripts/finetune_plant_starrseq.py` | the repo's default env (`pip install -e .`) | (repo `pyproject.toml`) | — |
-| NTv3-post | `scripts/finetune_ntv3_plant_starrseq.py` | `plant_ntv3` | `requirements/plant_starrseq_ntv3.txt` | pins `jax[cuda12]==0.9.2` + **CPU** torch |
+| NTv3-post | `scripts/finetune_ntv3_plant_starrseq.py` | `plant_ntv3` | `requirements/plant_starrseq_ntv3.txt` | pins `jax[cuda12]==0.9.2` (pure JAX, no torch) |
 | PlantCAD2 | `scripts/finetune_plantcad2_plant_starrseq.py` | `plant_plantcad2` | `requirements/plant_starrseq_plantcad2.txt` | **CUDA-12.4** torch + `mamba-ssm`, `transformers<5` |
 | Jores CNN | `scripts/finetune_jores_plant_starrseq.py` | `plant_jores` | `requirements/plant_starrseq_jores.txt` | plain torch, from scratch |
 
-The three non-AlphaGenome envs are mutually exclusive: NTv3 needs `jax[cuda12]==0.9.2`
-with a **CPU** torch wheel, PlantCAD2 needs a **cu124** torch wheel plus Mamba CUDA
-kernels, and their `transformers` pins differ — so they must be installed apart.
+The three non-AlphaGenome envs are mutually exclusive: NTv3 is pure JAX
+(`jax[cuda12]==0.9.2`, no torch), PlantCAD2 needs a **cu124** torch wheel plus Mamba
+CUDA kernels, and their `transformers` pins differ — so they must be installed apart.
 
 > **Package import note.** All runners import the JAX-free helpers
 > `alphagenome_ft_mpra.plant_starrseq_utils` / `alphagenome_ft_mpra.plant_torch`.
@@ -54,12 +54,8 @@ python scripts/finetune_ntv3_plant_starrseq.py --config configs/plant_starrseq_n
 python scripts/finetune_ntv3_plant_starrseq.py --config configs/plant_starrseq_ntv3_leaf.json --mode combined --probe
 ```
 
-If `torch` resolves to a CUDA wheel and clashes with the JAX CUDA runtime, force the
-CPU build (the runner only uses torch for the DataLoader-free ridge helpers):
-
-```bash
-pip install torch --index-url https://download.pytorch.org/whl/cpu
-```
+The NTv3 runner is pure JAX (its numpy ridge/Pearson probe helpers come from the
+torch-free `plant_starrseq_utils`), so this env needs no torch.
 
 ## PlantCAD2 (`plant_plantcad2`)
 

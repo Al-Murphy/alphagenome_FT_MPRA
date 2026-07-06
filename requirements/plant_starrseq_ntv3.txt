@@ -1,10 +1,10 @@
 # Requirements for the NTv3-post plant STARR-seq runner
 #   scripts/finetune_ntv3_plant_starrseq.py
 #
-# JAX + Flax NNX stack. This CONFLICTS with the PlantCAD2 env (which needs a
-# CUDA-12.4 torch build + mamba-ssm) and with the repo's default AlphaGenome env,
-# so install it in its OWN dedicated environment (Python 3.12). See
-# docs/plant_starrseq_environments.md for the full recipe.
+# Pure JAX + Flax NNX — NO torch. This CONFLICTS with the PlantCAD2 env (which
+# needs a CUDA-12.4 torch build + mamba-ssm) and with the repo's default
+# AlphaGenome env, so install it in its OWN dedicated environment (Python 3.12).
+# See docs/plant_starrseq_environments.md for the full recipe.
 #
 # GPU note: jax[cuda12] pulls the CUDA 12 wheels; at RUN time JAX needs
 #   export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
@@ -23,12 +23,6 @@ nucleotide_transformer @ git+https://github.com/instadeepai/nucleotide-transform
 huggingface-hub
 transformers>=4.40
 safetensors
-
-# CPU-only torch: the runner itself trains in JAX, but it imports the shared
-# ridge/metric helpers from alphagenome_ft_mpra.plant_torch (a torch module).
-# Install the CPU wheel to avoid clashing with the JAX CUDA runtime:
-#   pip install torch --index-url https://download.pytorch.org/whl/cpu
-torch
 
 # data / metrics
 numpy
