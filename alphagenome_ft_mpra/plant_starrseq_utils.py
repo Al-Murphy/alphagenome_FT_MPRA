@@ -633,6 +633,40 @@ def write_run_metrics(
     return path
 
 
+# ── Ridge probe helpers (pure numpy; shared by all cache-once probes) ─────────
+# Kept torch-free here so the JAX-only NTv3 probe can use them without pulling in
+# torch. plant_torch re-exports these for the PyTorch runners.
+
+
+def ridge_fit(X, y, lam):
+    """Closed-form ridge on centered features/targets; returns (w, xb, yb)."""
+    xb = X.mean(0)
+    yb = float(y.mean())
+    Xc = X - xb
+    A = Xc.T @ Xc + lam * np.eye(Xc.shape[1], dtype=np.float64)
+    w = np.linalg.solve(A, Xc.T @ (y - yb))
+    return w, xb, yb
+
+
+def ridge_predict(X, w, xb, yb):
+    return (X - xb) @ w + yb
+
+
+def pearson(a, b):
+    return float(np.corrcoef(np.asarray(a).flatten(), np.asarray(b).flatten())[0, 1])
+
+
+def select_ridge(Xtr, ytr, Xva, yva, lambdas=(1e-1, 1e0, 1e1, 1e2, 1e3, 1e4, 1e5)):
+    """Fit ridge for each lambda, pick the best on val Pearson. Returns (val_r, lam, w, xb, yb)."""
+    best = None
+    for lam in lambdas:
+        w, xb, yb = ridge_fit(Xtr.astype(np.float64), ytr.astype(np.float64), lam)
+        vr = pearson(ridge_predict(Xva, w, xb, yb), yva)
+        if best is None or vr > best[0]:
+            best = (vr, lam, w, xb, yb)
+    return best
+
+
 def data_is_present(data_path: str) -> bool:
     """True if all 8 built TSVs exist under ``data_path``."""
     for tissue in _TISSUES:

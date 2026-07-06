@@ -98,11 +98,15 @@ live.
   - **`finetune_jores_plant_starrseq.py`** – **Jores CNN** trained from scratch
     (any torch env). Single-stage; no probe (no pretrained backbone).
 
-- **Reproduce the table**
+- **Reproduce the table / plot**
   - **`reproduce_plant_starrseq_table.py`** – Render the full model × tissue × mode
     grid (finetune + probe test Pearson r) into `results/plant_starrseq/summary.{md,csv}`.
     Reads the committed reference metrics by default; `--run <model>` recomputes an
     installed model's cells live.
+  - **`plot_plant_starrseq_benchmark_results.py`** – Combined-mode benchmark bar
+    chart (test Pearson r by tissue, probing vs fine-tuned, one hue family per
+    model) styled like `plot_benchmark_results.py`, into
+    `results/plant_starrseq/plots/plant_starrseq_benchmark.png`.
 
 ```bash
 # 1. build the dataset
