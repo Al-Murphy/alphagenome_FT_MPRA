@@ -239,7 +239,7 @@ def run_finetune(args):
 def run_probe(args):
     import jax.numpy as jnp
     from nucleotide_transformer_v3.pretrained import get_posttrained_ntv3_model
-    from alphagenome_ft_mpra.plant_torch import select_ridge, ridge_predict, pearson
+    from alphagenome_ft_mpra.plant_starrseq_utils import select_ridge, ridge_predict, pearson
 
     model, tokenizer, config = get_posttrained_ntv3_model(args.model_name, use_bfloat16=True)
     species_token = SPECIES_TOKEN[args.tissue]
