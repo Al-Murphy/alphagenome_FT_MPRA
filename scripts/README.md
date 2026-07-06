@@ -65,14 +65,15 @@ Place the Gosai data at `./data/gosai_episomal/` with these files:
 - **Attributions / interpretation**
   - **`compute_attributions_starrseq.py`** – Compute attribution maps and sequence logos for STARR‑seq using DeepSHAP, gradients, or gradient×input. Supports single sequences or top‑N sequences by activity.
 
-## 4. Plant STARR-seq (Jores et al. 2021) finetuning workflow (4 models)
+## 4. Plant STARR-seq (Jores et al. 2021) finetuning workflow (5 models)
 
 The Jores21 plant promoter STARR-seq assay measures core-promoter activity in two
 systems (**leaf**, **proto**) across three data modes:
 **`promoter_only`** (raw 170 bp promoter), **`enhancer`** (437 bp construct with the
 CaMV 35S enhancer), and **`combined`** (437 bp, +/- enhancer rows). This workflow
-finetunes and linear-probes **four** models — AlphaGenome, NTv3-post, PlantCAD2,
-and the from-scratch Jores CNN — and reproduces the full benchmark grid.
+finetunes and linear-probes five models — AlphaGenome, NTv3-post, PlantCAD2,
+PlantCaduceus (l32), and the from-scratch Jores CNN — and reproduces the full
+benchmark grid. (PlantCaduceus was benchmarked on the combined mode only.)
 
 Because the four models have incompatible dependency stacks, only the AlphaGenome
 path runs in this repo's default environment; the other three are self-contained
@@ -95,6 +96,10 @@ live.
     (leaf=arabidopsis, proto=maize), attention-pool head. `--probe` supported.
   - **`finetune_plantcad2_plant_starrseq.py`** – **PlantCAD2** (torch + mamba-ssm env).
     Frozen Mamba2 backbone, attention-pool head, two-stage. `--probe` supported.
+    Also runs **PlantCaduceus (l32)** — same runner + env, same d_model=1024 Caduceus
+    backbone — via `--config configs/plant_starrseq_plantcaduceus_{leaf,proto}.json`
+    (the config sets `model_name=kuleshov-group/PlantCaduceus_l32` and tags outputs
+    `plantcaduceus`).
   - **`finetune_jores_plant_starrseq.py`** – **Jores CNN** trained from scratch
     (any torch env). Single-stage; no probe (no pretrained backbone).
 

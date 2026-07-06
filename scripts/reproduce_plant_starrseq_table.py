@@ -28,11 +28,12 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 REFERENCE_DIR = REPO_ROOT / "results" / "plant_starrseq" / "reference"
 LIVE_DIR = REPO_ROOT / "results" / "plant_starrseq"
 
-MODELS = ["ntv3", "alphagenome", "plantcad2", "jores"]
+MODELS = ["ntv3", "alphagenome", "plantcad2", "plantcaduceus", "jores"]
 MODEL_LABEL = {
     "ntv3": "NTv3-post",
     "alphagenome": "AlphaGenome-JAX",
     "plantcad2": "PlantCAD2",
+    "plantcaduceus": "PlantCaduceus",
     "jores": "Jores CNN",
 }
 TISSUES = ["leaf", "proto"]
@@ -43,6 +44,7 @@ RUNNER = {
     "alphagenome": "finetune_plant_starrseq.py",
     "ntv3": "finetune_ntv3_plant_starrseq.py",
     "plantcad2": "finetune_plantcad2_plant_starrseq.py",
+    "plantcaduceus": "finetune_plantcad2_plant_starrseq.py",  # same runner, l32 via config
     "jores": "finetune_jores_plant_starrseq.py",
 }
 CONFIG = {

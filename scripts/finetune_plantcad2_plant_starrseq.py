@@ -91,6 +91,8 @@ def _build_parser():
     p.add_argument("--no_second_stage", action="store_true")
     p.add_argument("--probe", action="store_true")
     p.add_argument("--results_dir", type=str, default="./results/plant_starrseq")
+    p.add_argument("--model_label", type=str, default="plantcad2",
+                   help="Output/metrics label; e.g. 'plantcaduceus' for the l32 model.")
     p.add_argument("--seed", type=int, default=42)
     return p
 
@@ -99,6 +101,9 @@ def _apply_config(parser, cfg):
     for k in ("tissue", "mode"):
         if k in cfg:
             parser.set_defaults(**{k: cfg[k]})
+    # 'model' names the backbone family for output tagging (plantcad2 / plantcaduceus)
+    if "model" in cfg:
+        parser.set_defaults(model_label=cfg["model"])
     d = cfg.get("data", {})
     parser.set_defaults(data_path=d.get("data_path", "./data/jores_plant_starrseq"),
                         batch_size=d.get("batch_size", 32), max_shift=d.get("max_shift", 25))
@@ -209,8 +214,8 @@ def run_finetune(args):
         stage = "stage2"
 
     test_r = evaluate(test_loader)
-    out_dir = Path(args.results_dir) / "plantcad2" / args.tissue / args.mode / "finetune"
-    write_run_metrics(str(out_dir), "plantcad2", args.tissue, args.mode, "finetune", stage,
+    out_dir = Path(args.results_dir) / args.model_label / args.tissue / args.mode / "finetune"
+    write_run_metrics(str(out_dir), args.model_label, args.tissue, args.mode, "finetune", stage,
                       test_r, val_pearson=best_val)
     print(f"\nFinetune done. plantcad2 {args.tissue} {args.mode} "
           f"val={best_val:.4f} test={test_r:.4f}")
@@ -255,10 +260,10 @@ def run_probe(args):
     test_r = pearson(pred_te, yte)
     test_mse = float(np.mean((pred_te - yte) ** 2))
 
-    out_dir = Path(args.results_dir) / "plantcad2" / args.tissue / args.mode / "probe"
+    out_dir = Path(args.results_dir) / args.model_label / args.tissue / args.mode / "probe"
     out_dir.mkdir(parents=True, exist_ok=True)
     np.savez(out_dir / "probe_head.npz", w=w, xb=xb, yb=yb, lam=lam)
-    write_run_metrics(str(out_dir), "plantcad2", args.tissue, args.mode, "probe", "probe",
+    write_run_metrics(str(out_dir), args.model_label, args.tissue, args.mode, "probe", "probe",
                       test_r, val_pearson=val_r, test_mse=test_mse,
                       checkpoint=str(out_dir / "probe_head.npz"))
     print(f"\nProbe done. plantcad2 {args.tissue} {args.mode} best_lambda={lam} "
