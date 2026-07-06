@@ -1,0 +1,15 @@
+# Requirements for the Jores CNN plant STARR-seq runner
+#   scripts/finetune_jores_plant_starrseq.py
+#
+# The Jores CNN is trained from scratch — no pretrained backbone, no special
+# kernels. Any recent PyTorch works. It has no conflicting pins, so it can share
+# an environment with most torch projects; a small dedicated env is still the
+# simplest. Python 3.10+.
+
+torch>=2.0.0
+
+# data / metrics
+numpy
+pandas
+scipy
+tqdm
