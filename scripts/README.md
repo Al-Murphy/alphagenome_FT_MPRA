@@ -65,7 +65,58 @@ Place the Gosai data at `./data/gosai_episomal/` with these files:
 - **Attributions / interpretation**
   - **`compute_attributions_starrseq.py`** – Compute attribution maps and sequence logos for STARR‑seq using DeepSHAP, gradients, or gradient×input. Supports single sequences or top‑N sequences by activity.
 
-## 4. CAGI5 saturation mutagenesis & zero‑shot analyses
+## 4. Plant STARR-seq (Jores et al. 2021) finetuning workflow (4 models)
+
+The Jores21 plant promoter STARR-seq assay measures core-promoter activity in two
+systems (**leaf**, **proto**) across three data modes:
+**`promoter_only`** (raw 170 bp promoter), **`enhancer`** (437 bp construct with the
+CaMV 35S enhancer), and **`combined`** (437 bp, +/- enhancer rows). This workflow
+finetunes and linear-probes **four** models — AlphaGenome, NTv3-post, PlantCAD2,
+and the from-scratch Jores CNN — and reproduces the full benchmark grid.
+
+Because the four models have incompatible dependency stacks, only the AlphaGenome
+path runs in this repo's default environment; the other three are self-contained
+runner scripts that guard their heavy imports and print an env hint if run in the
+wrong environment. The reproduce script renders the exact committed benchmark
+table with **no heavy dependencies**, and can recompute an installed model's cells
+live.
+
+- **Data**
+  - **`fetch_plant_starrseq_data.py`** – Rebuild the Jores21 enrichment tables from
+    the paper's public GitHub barcode counts into
+    `./data/jores_plant_starrseq/jores21_{leaf,proto}_{35SEnh,noEnh}_{train,test}.tsv`.
+
+- **Training / probing**
+  - **`finetune_plant_starrseq.py`** – **AlphaGenome** (native to this repo's env).
+    `EncoderMPRAHead`, two-stage frozen→unfrozen; `--mode` selects the data mode and
+    `--probe` runs the cache-once mean-pool + ridge linear probe.
+  - **`finetune_ntv3_plant_starrseq.py`** – **NTv3-post** (JAX/flax-nnx, needs the
+    `nucleotide_transformer_v3` env). Conv-tower features, species-conditioned
+    (leaf=arabidopsis, proto=maize), attention-pool head. `--probe` supported.
+  - **`finetune_plantcad2_plant_starrseq.py`** – **PlantCAD2** (torch + mamba-ssm env).
+    Frozen Mamba2 backbone, attention-pool head, two-stage. `--probe` supported.
+  - **`finetune_jores_plant_starrseq.py`** – **Jores CNN** trained from scratch
+    (any torch env). Single-stage; no probe (no pretrained backbone).
+
+- **Reproduce the table**
+  - **`reproduce_plant_starrseq_table.py`** – Render the full model × tissue × mode
+    grid (finetune + probe test Pearson r) into `results/plant_starrseq/summary.{md,csv}`.
+    Reads the committed reference metrics by default; `--run <model>` recomputes an
+    installed model's cells live.
+
+```bash
+# 1. build the dataset
+python scripts/fetch_plant_starrseq_data.py
+
+# 2. AlphaGenome finetune + probe (runs in this repo's env)
+python scripts/finetune_plant_starrseq.py --config configs/plant_starrseq_alphagenome_leaf.json --mode combined
+python scripts/finetune_plant_starrseq.py --config configs/plant_starrseq_alphagenome_leaf.json --mode combined --probe
+
+# 3. reproduce the full 4-model benchmark table
+python scripts/reproduce_plant_starrseq_table.py
+```
+
+## 5. CAGI5 saturation mutagenesis & zero‑shot analyses
 
 - **Zero‑shot and fine‑tuned CAGI5 evaluations**
   - **`test_cagi5_zero_shot_base.py`** – Zero‑shot evaluation of the **base AlphaGenome model** on the CAGI5 saturation mutagenesis benchmark.
@@ -77,7 +128,7 @@ Place the Gosai data at `./data/gosai_episomal/` with these files:
   - **`plot_cagi5_results.py`** – Generate violin plots comparing models on the CAGI5 benchmark.
   - **`plot_benchmark_results.py`** – Generate bar plots comparing models on LentiMPRA and STARR‑seq benchmarks.
 
-## 5. Embedding caching, benchmarking, and job management
+## 6. Embedding caching, benchmarking, and job management
 
 - **Caching for faster training**
   - **`cache_embeddings.py`** – Pre‑compute and cache AlphaGenome MPRA encoder embeddings.
@@ -88,7 +139,7 @@ Place the Gosai data at `./data/gosai_episomal/` with these files:
   - **`collate_benchmark_results.py`** – Collate benchmark results from all cell types into a summary table.
   - **`regenerate_benchmark_results.py`** – Regenerate benchmark results CSVs from Weights & Biases (WandB) run history.
 
-## 6. Baselines and helper scripts
+## 7. Baselines and helper scripts
 
 - **`test_mpralegnet.py`** – Evaluate the LegNet MPRA baseline model on LentiMPRA test data.
 - **`fetch_cagi5_references.py`** – Fetch reference sequences for CAGI5 elements from UCSC Genome Browser.

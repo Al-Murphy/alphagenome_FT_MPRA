@@ -1,0 +1,12 @@
+{
+  "model": "plantcad2",
+  "tissue": "leaf",
+  "mode": "combined",
+  "method": "probe",
+  "stage": "probe",
+  "test_pearson": 0.7038,
+  "val_pearson": 0.7202,
+  "species": null,
+  "source_commit": "11909d0",
+  "source_checkpoint": "/grid/koo/home/duran/autotune/experiments/starrseq-leaf-plantcad2/checkpoints/11909d0/combined/probe/probe_head.npz"
+}

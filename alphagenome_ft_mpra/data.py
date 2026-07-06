@@ -987,3 +987,104 @@ class EpisomalMPRADataset:
             "y": label,
             "organism_index": jnp.array([0]),
         }
+
+
+# ── Plant STARR-seq (Jores et al. 2021) — JAX dataset ─────────────────────────
+
+
+class PlantStarrSeqDataset:
+    """JAX dataset for the Jores 2021 plant promoter STARR-seq assay.
+
+    Compatible with AlphaGenome training via ``alphagenome_ft``. Returns the same
+    ``{seq, y, organism_index}`` schema as :class:`LentiMPRADataset` /
+    :class:`EpisomalMPRADataset` so :class:`MPRADataLoader` batches it unchanged.
+    All construct assembly, splits, and augmentation live in
+    :mod:`alphagenome_ft_mpra.plant_starrseq_utils` (shared with the PyTorch
+    runner scripts). Sequences are cross-species so organism is fixed to
+    ``HOMO_SAPIENS`` (organism_index 0), matching the original sweep.
+
+    Args:
+        tissue: ``leaf`` (tobacco leaf) or ``proto`` (maize protoplast).
+        mode: ``promoter_only`` (170 bp), ``enhancer`` (437 bp construct with the
+            35S enhancer), or ``combined`` (437 bp, +/- enhancer rows).
+    """
+
+    def __init__(
+        self,
+        model: Any,
+        path_to_data: str = "./data/jores_plant_starrseq",
+        tissue: str = "leaf",
+        mode: str = "combined",
+        split: str = "train",
+        random_shift: bool = False,
+        random_shift_likelihood: float = 0.5,
+        max_shift: int = 25,
+        reverse_complement: bool = False,
+        reverse_complement_likelihood: float = 0.5,
+        val_frac: float = 0.1,
+        subset_frac: float = 1.0,
+        seed: int = 42,
+    ):
+        import numpy as np
+        from .plant_starrseq_utils import (
+            VALID_MODES,
+            VALID_SPLITS,
+            VALID_TISSUES,
+            _load_plant_starrseq_data,
+        )
+
+        assert tissue in VALID_TISSUES
+        assert mode in VALID_MODES
+        assert split in VALID_SPLITS
+
+        self.model = model
+        self.tissue = tissue
+        self.mode = mode
+        self.split = split
+        self.organism = dna_model.Organism.HOMO_SAPIENS
+
+        self.random_shift = random_shift
+        self.random_shift_likelihood = random_shift_likelihood
+        self.max_shift = max_shift
+        self.reverse_complement = reverse_complement
+        self.reverse_complement_likelihood = reverse_complement_likelihood
+
+        # construct assembly + augmentation need a numpy Generator (build_construct)
+        self._rng = np.random.default_rng(seed)
+
+        self.data = _load_plant_starrseq_data(
+            path_to_data, tissue, mode, split, val_frac=val_frac, seed=seed,
+        )
+
+        if subset_frac < 1.0:
+            n = int(len(self.data) * subset_frac)
+            self.data = self.data.sample(n=n, random_state=seed).reset_index(drop=True)
+
+        print(f"Loaded {len(self.data)} plant STARR-seq samples for {tissue} {mode} {split}")
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        from .plant_starrseq_utils import build_sequence_for_mode
+
+        row = self.data.iloc[idx]
+        seq = build_sequence_for_mode(
+            row,
+            self.mode,
+            self._rng,
+            random_shift=self.random_shift,
+            shift_likelihood=self.random_shift_likelihood,
+            max_shift=self.max_shift,
+            reverse_complement=self.reverse_complement,
+            reverse_complement_likelihood=self.reverse_complement_likelihood,
+        )
+        label = float(row["enrichment"])
+
+        ohe = self.model._one_hot_encoder.encode(seq)
+
+        return {
+            "seq": ohe,
+            "y": label,
+            "organism_index": jnp.array([0]),
+        }

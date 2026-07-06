@@ -1,0 +1,12 @@
+{
+  "model": "ntv3",
+  "tissue": "leaf",
+  "mode": "promoter_only",
+  "method": "finetune",
+  "stage": "stage2",
+  "test_pearson": 0.7888,
+  "val_pearson": 0.7859,
+  "species": "arabidopsis_thaliana",
+  "source_commit": "0b297c8",
+  "source_checkpoint": "/grid/koo/home/duran/autotune-worktrees/ntv3-post/experiments/starrseq-leaf-ntv3-post/checkpoints/0b297c8/promoter_only/stage2/best.pt"
+}

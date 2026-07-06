@@ -1,0 +1,50 @@
+{
+  "_comment": "Jores21 plant STARR-seq, PlantCAD2 (frozen Mamba2 backbone) + attention-pool MPRA head. Requires the plantcad2 (torch + mamba-ssm) env, not the repo uv env.",
+  "_source": "Final plant STARR-seq sweep (test-r: leaf combined 0.8927, proto combined 0.8481).",
+  "model": "plantcad2",
+  "tissue": "leaf",
+  "mode": "combined",
+  "data": {
+    "data_path": "./data/jores_plant_starrseq",
+    "batch_size": 32,
+    "random_shift": true,
+    "random_shift_likelihood": 0.5,
+    "max_shift": 15,
+    "reverse_complement": true,
+    "reverse_complement_likelihood": 0.5
+  },
+  "model_params": {
+    "backbone": "plantcad2",
+    "model_name": "PlantCAD2-Medium-l48-d1024",
+    "weights_dir": "./data/plantcad2_weights",
+    "head_pooling": "attention",
+    "hidden_size": 1024,
+    "n_heads": 4,
+    "do": 0.2
+  },
+  "training": {
+    "num_epochs": 100,
+    "learning_rate": 0.0005,
+    "optimizer": "adamw",
+    "weight_decay": 0.0,
+    "gradient_accumulation_steps": 1,
+    "gradient_clip": 1.0,
+    "early_stopping_patience": 5,
+    "val_eval_frequency": 4,
+    "stage1_time_budget": 9000
+  },
+  "two_stage": {
+    "enabled": true,
+    "second_stage_lr": 1e-05,
+    "second_stage_epochs": 50,
+    "extra_time_budget": 9000
+  },
+  "checkpointing": {
+    "checkpoint_dir": "./results/plant_starrseq/plantcad2"
+  },
+  "wandb": {
+    "enabled": false,
+    "project": "plant-starrseq-plantcad2",
+    "wandb_name": null
+  }
+}

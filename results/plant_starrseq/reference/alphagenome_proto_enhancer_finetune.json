@@ -1,0 +1,12 @@
+{
+  "model": "alphagenome",
+  "tissue": "proto",
+  "mode": "enhancer",
+  "method": "finetune",
+  "stage": "stage2",
+  "test_pearson": 0.8036,
+  "val_pearson": 0.7869,
+  "species": null,
+  "source_commit": "e20a094",
+  "source_checkpoint": "/grid/koo/home/duran/autotune/experiments/starrseq-proto-alphagenome-jax/checkpoints/e20a094/enhancer/stage2/best.pt"
+}

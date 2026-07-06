@@ -1,0 +1,45 @@
+{
+  "_comment": "Jores21 plant STARR-seq, Jores CNN trained FROM SCRATCH (MEME-motif warm-start), single-stage. No linear probe (no pretrained backbone). Requires a torch env.",
+  "_source": "Final plant STARR-seq sweep (test-r: leaf combined 0.8632, proto combined 0.8651).",
+  "model": "jores",
+  "tissue": "proto",
+  "mode": "combined",
+  "data": {
+    "data_path": "./data/jores_plant_starrseq",
+    "batch_size": 128,
+    "random_shift": true,
+    "random_shift_likelihood": 0.5,
+    "max_shift": 15,
+    "reverse_complement": true,
+    "reverse_complement_likelihood": 0.5
+  },
+  "model_params": {
+    "backbone": "jores_cnn",
+    "do": 0.15,
+    "motif_warm_start": true
+  },
+  "training": {
+    "num_epochs": 200,
+    "learning_rate": 0.002,
+    "optimizer": "adam",
+    "weight_decay": 0.0,
+    "gradient_accumulation_steps": 1,
+    "gradient_clip": null,
+    "warmup_ratio": 0.05,
+    "warmdown_ratio": 0.3,
+    "final_lr_frac": 0.1,
+    "early_stopping_patience": 5,
+    "val_eval_frequency": 4
+  },
+  "two_stage": {
+    "enabled": false
+  },
+  "checkpointing": {
+    "checkpoint_dir": "./results/plant_starrseq/jores"
+  },
+  "wandb": {
+    "enabled": false,
+    "project": "plant-starrseq-jores",
+    "wandb_name": null
+  }
+}

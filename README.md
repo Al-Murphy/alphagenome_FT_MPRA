@@ -215,6 +215,13 @@ python scripts/finetune_starrseq.py --config configs/starrseq.json
 # Enformer with DeepSTARR
 python scripts/finetune_enformer_starrseq.py --config configs/starrseq.json
 
+# AlphaGenome with plant STARR-seq (Jores 2021)
+python scripts/fetch_plant_starrseq_data.py
+python scripts/finetune_plant_starrseq.py --config configs/plant_starrseq_alphagenome_leaf.json --mode combined
+
+# reproduce the full 4-model plant STARR-seq benchmark table (no heavy deps)
+python scripts/reproduce_plant_starrseq_table.py
+
 # AlphaGenome with episomal MPRA (Gosai 2024)
 python scripts/finetune_episomal_mpra.py --config configs/episomal_K562.json
 
@@ -240,6 +247,7 @@ drop it at the indicated path.
 | DeepSTARR (de Almeida et al. 2022) | `data/deepstarr/` | DeepSTARR genomic-context data |
 | CAGI5 saturation mutagenesis | `data/cagi5/` | use `scripts/fetch_cagi5_references.py` to fetch reference sequences |
 | **Episomal MPRA (Gosai et al. 2024)** | **`data/gosai_episomal/`** | **`DATA-Table_S2__MPRA_dataset.txt`** (main TSV; supplementary table from the Nature Genetics paper). Use `scripts/fetch_episomal_data.py` to download from the Tewhey-lab public bucket linked in the BODA2 README. Optional test sets at `data/gosai_episomal/test_sets/test_ood_designed_k562.tsv` and `data/gosai_episomal/test_sets/test_snv_pairs_hashfrag.tsv` enable the high-activity-designed and SNV-effects evaluations. |
+| **Plant STARR-seq (Jores et al. 2021)** | **`data/jores_plant_starrseq/`** | Built by `scripts/fetch_plant_starrseq_data.py`, which rebuilds the enrichment tables from the paper's public GitHub barcode counts (`tobjores/Synthetic-Promoter-Designs...`; a pre-processed h5sd copy is also on Zenodo, records/7140083). Produces `jores21_{leaf,proto}_{35SEnh,noEnh}_{train,test}.tsv`. See `scripts/README.md` §4 for the 4-model finetune/probe/reproduce workflow. |
 
 ## Project Structure
 

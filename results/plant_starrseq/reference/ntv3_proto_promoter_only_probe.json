@@ -1,0 +1,12 @@
+{
+  "model": "ntv3",
+  "tissue": "proto",
+  "mode": "promoter_only",
+  "method": "probe",
+  "stage": "probe",
+  "test_pearson": 0.7206,
+  "val_pearson": 0.7044,
+  "species": "zea_mays",
+  "source_commit": "0b297c8",
+  "source_checkpoint": "/grid/koo/home/duran/autotune-worktrees/ntv3-post/experiments/starrseq-proto-ntv3-post/checkpoints/0b297c8/promoter_only/probe/probe_head.npz"
+}

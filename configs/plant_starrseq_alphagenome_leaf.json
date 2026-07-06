@@ -1,0 +1,52 @@
+{
+  "_comment": "Jores21 plant STARR-seq, AlphaGenome + EncoderMPRAHead (flatten). seq len is 437 for enhancer/combined, 170 for promoter_only (set by --mode).",
+  "_source": "Final plant STARR-seq sweep (test-r: leaf combined 0.8899, proto combined 0.8795).",
+  "model": "alphagenome",
+  "tissue": "leaf",
+  "mode": "combined",
+  "data": {
+    "data_path": "./data/jores_plant_starrseq",
+    "batch_size": 128,
+    "random_shift": true,
+    "random_shift_likelihood": 0.5,
+    "max_shift": 15,
+    "reverse_complement": true,
+    "reverse_complement_likelihood": 0.5
+  },
+  "model_params": {
+    "init_seq_len": 437,
+    "center_bp": 256,
+    "pooling_type": "flatten",
+    "nl_size": "1024",
+    "do": 0.1,
+    "activation": "relu",
+    "organism": "HOMO_SAPIENS"
+  },
+  "training": {
+    "num_epochs": 100,
+    "learning_rate": 0.0003,
+    "optimizer": "adam",
+    "weight_decay": 1e-06,
+    "gradient_accumulation_steps": 1,
+    "gradient_clip": 1.0,
+    "lr_scheduler": null,
+    "no_val_split": false,
+    "early_stopping_patience": 5,
+    "val_eval_frequency": 4,
+    "test_eval_frequency": 4
+  },
+  "two_stage": {
+    "enabled": true,
+    "second_stage_lr": 0.0003,
+    "second_stage_epochs": 50
+  },
+  "checkpointing": {
+    "checkpoint_dir": "./results/plant_starrseq/alphagenome"
+  },
+  "wandb": {
+    "enabled": false,
+    "project": "plant-starrseq-alphagenome",
+    "wandb_name": null
+  },
+  "base_checkpoint_path": null
+}
