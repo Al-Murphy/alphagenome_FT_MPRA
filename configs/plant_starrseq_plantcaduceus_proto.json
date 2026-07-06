@@ -1,0 +1,50 @@
+{
+  "_comment": "Jores21 plant STARR-seq, PlantCaduceus l32 (512bp Caduceus, d_model=1024) via the PlantCAD2 runner (same backbone family). Combined mode only. Requires the plantcad2 (torch + mamba-ssm) env.",
+  "_source": "Final plant STARR-seq sweep (combined test-r: leaf 0.8902, proto 0.8846).",
+  "model": "plantcaduceus",
+  "tissue": "proto",
+  "mode": "combined",
+  "data": {
+    "data_path": "./data/jores_plant_starrseq",
+    "batch_size": 32,
+    "random_shift": true,
+    "random_shift_likelihood": 0.5,
+    "max_shift": 15,
+    "reverse_complement": true,
+    "reverse_complement_likelihood": 0.5
+  },
+  "model_params": {
+    "backbone": "plantcad2",
+    "model_name": "kuleshov-group/PlantCaduceus_l32",
+    "weights_dir": "./data/plantcad2_weights",
+    "head_pooling": "attention",
+    "hidden_size": 1024,
+    "n_heads": 4,
+    "do": 0.1
+  },
+  "training": {
+    "num_epochs": 100,
+    "learning_rate": 0.0005,
+    "optimizer": "adamw",
+    "weight_decay": 0.0,
+    "gradient_accumulation_steps": 1,
+    "gradient_clip": 1.0,
+    "early_stopping_patience": 5,
+    "val_eval_frequency": 4,
+    "stage1_time_budget": 9000
+  },
+  "two_stage": {
+    "enabled": true,
+    "second_stage_lr": 1e-05,
+    "second_stage_epochs": 50,
+    "extra_time_budget": 9000
+  },
+  "checkpointing": {
+    "checkpoint_dir": "./results/plant_starrseq/plantcad2"
+  },
+  "wandb": {
+    "enabled": false,
+    "project": "plant-starrseq-plantcad2",
+    "wandb_name": null
+  }
+}

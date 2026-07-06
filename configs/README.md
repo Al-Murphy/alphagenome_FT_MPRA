@@ -22,6 +22,7 @@ One config per model × tissue (data mode is selected at the CLI with `--mode`):
 - `plant_starrseq_alphagenome_{leaf,proto}.json` - AlphaGenome + EncoderMPRAHead
 - `plant_starrseq_ntv3_{leaf,proto}.json` - NTv3-post (species-conditioned)
 - `plant_starrseq_plantcad2_{leaf,proto}.json` - PlantCAD2 (frozen Mamba2 + head)
+- `plant_starrseq_plantcaduceus_{leaf,proto}.json` - PlantCaduceus l32 (via the PlantCAD2 runner; combined mode)
 - `plant_starrseq_jores_{leaf,proto}.json` - Jores CNN (from scratch, single-stage)
 
 These use the same nested schema plus a top-level `model`/`tissue`/`mode` and a

@@ -1,0 +1,12 @@
+{
+  "model": "plantcaduceus",
+  "tissue": "proto",
+  "mode": "combined",
+  "method": "finetune",
+  "stage": "stage2",
+  "test_pearson": 0.8846,
+  "val_pearson": 0.8881,
+  "species": null,
+  "source_checkpoint": "/grid/koo/home/duran/autotune/experiments/starrseq-proto-plantcaduceus-l32/checkpoints/11909d0/stage2-matched18000/best.pt",
+  "source_commit": "11909d0"
+}
