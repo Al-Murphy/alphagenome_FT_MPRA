@@ -1,5 +1,5 @@
 {
-  "_comment": "Jores21 plant STARR-seq, AlphaGenome + EncoderMPRAHead (flatten). seq len is 437 for enhancer/combined, 170 for promoter_only (set by --mode).",
+  "_comment": "Jores21 plant STARR-seq, AlphaGenome + EncoderMPRAHead (flatten). seq len is 437 for enhancer/combined, 170 for promoter_only (set by --mode). The head width was tuned PER MODE by the sweep, so nl_size lives in mode_overrides below \u2014 the top-level model_params.nl_size is only a fallback. center_bp is inert with pooling_type=flatten (the head flattens all encoder positions).",
   "_source": "Final plant STARR-seq sweep (test-r: leaf combined 0.8899, proto combined 0.8795).",
   "model": "alphagenome",
   "tissue": "leaf",
@@ -48,5 +48,22 @@
     "project": "plant-starrseq-alphagenome",
     "wandb_name": null
   },
-  "base_checkpoint_path": null
+  "base_checkpoint_path": null,
+  "mode_overrides": {
+    "combined": {
+      "model_params": {
+        "nl_size": "4096"
+      }
+    },
+    "enhancer": {
+      "model_params": {
+        "nl_size": "1024"
+      }
+    },
+    "promoter_only": {
+      "model_params": {
+        "nl_size": "1024"
+      }
+    }
+  }
 }

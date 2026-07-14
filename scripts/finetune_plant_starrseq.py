@@ -149,6 +149,25 @@ def _build_parser():
     return parser
 
 
+def _apply_mode_overrides(parser, config, mode):
+    """Apply the ``mode_overrides`` block for the selected mode.
+
+    The sweep tuned the head width per data mode (leaf/combined 4096, proto/combined
+    2048, the rest 1024), but there is only one config per tissue — so the per-mode
+    values live here rather than in ``model_params``. Without this the runner would
+    build a 1024-wide head for every mode and could not reproduce the published runs.
+    """
+    overrides = (config.get("mode_overrides") or {}).get(mode)
+    if not overrides:
+        return
+    for section, values in overrides.items():
+        if section == "model_params":
+            parser.set_defaults(**values)
+        else:
+            raise ValueError(f"Unsupported mode_overrides section: {section!r}")
+    print(f"Applied mode_overrides[{mode}]: {overrides}")
+
+
 def _apply_config_defaults(parser, config):
     if "tissue" in config:
         parser.set_defaults(tissue=config["tissue"])
@@ -259,8 +278,26 @@ def run_finetune(args, seq_len):
         lr_scheduler=args.lr_scheduler,
     )
 
-    val_pearson = max(history["val_pearson"]) if history.get("val_pearson") else None
-    test_pearson = history["test_pearson"][-1] if history.get("test_pearson") else None
+    # Report the metrics of the checkpoint that was actually saved. ``train`` writes
+    # best.pt on the lowest val_loss, so the reported test score must come from that
+    # same epoch — not from the last one (which is a different, typically overfit
+    # model) and not from the best test epoch (which would be selecting on test).
+    val_pearson = test_pearson = None
+    val_losses = history.get("val_loss") or []
+    if val_losses:
+        best_idx = int(np.argmin(val_losses))
+        val_pearsons = history.get("val_pearson") or []
+        test_pearsons = history.get("test_pearson") or []
+        if best_idx < len(val_pearsons):
+            val_pearson = val_pearsons[best_idx]
+        if best_idx < len(test_pearsons):
+            test_pearson = test_pearsons[best_idx]
+        else:
+            # val and test were evaluated on different cadences, so the best-val epoch
+            # has no matching test eval — refuse to report a mismatched number.
+            print(f"WARNING: no test eval at the best-val epoch ({best_idx}); "
+                  f"val_eval_frequency and test_eval_frequency must match for the "
+                  f"reported test_pearson to describe the saved checkpoint.")
     stage = "stage2" if args.second_stage_lr else "stage1"
 
     out_dir = Path(args.results_dir) / "alphagenome" / args.tissue / args.mode / "finetune"
@@ -355,7 +392,12 @@ def main():
     temp_args, _ = parser.parse_known_args()
     if temp_args.config:
         print(f"Loading config from: {temp_args.config}")
-        _apply_config_defaults(parser, load_config(temp_args.config))
+        config = load_config(temp_args.config)
+        _apply_config_defaults(parser, config)
+        # re-parse so `mode` reflects CLI > config > argparse default, then apply the
+        # per-mode head overrides on top
+        mode_args, _ = parser.parse_known_args()
+        _apply_mode_overrides(parser, config, mode_args.mode)
     args = parser.parse_args()
 
     seq_len = PROMOTER_LENGTH if args.mode == "promoter_only" else SEQUENCE_LENGTH

@@ -223,11 +223,61 @@ def run_finetune(args):
         return best_val
 
     best_val = train_epochs(args.num_epochs)
-    # this reference runner trains the head on frozen conv-tower features (stage 1).
-    # the committed reference numbers correspond to the sweep's full two-stage run
-    # (backbone unfreeze at second_stage_lr); enable that by extending the optimizer
-    # to the NTv3 backbone params, following the PlantCAD2 runner's stage-2 pattern.
     stage = "stage1"
+
+    # Stage 2: unfreeze the conv-tower backbone and train it alongside the head.
+    # Without this the runner could only ever produce a frozen-backbone (stage-1) number,
+    # while the committed reference values come from a two-stage run.
+    #
+    # Backbone and head share second_stage_lr. The configs carry a `backbone_lr_scale`
+    # key, but upstream only ever logged it — its backbone optimizer used the unscaled
+    # stage-2 LR — so applying it here would diverge from the runs that produced the
+    # reference numbers.
+    if args.second_stage_lr and not args.no_second_stage:
+        def loss_fn_s2(model_mod, head_mod, tokens, targets):
+            feats = _get_embeddings(model_mod, tokens, species_token)
+            pred = head_mod(feats, deterministic=False)
+            return jnp.mean((pred - targets) ** 2)
+
+        head_opt2 = nnx.Optimizer(
+            head, optax.chain(
+                optax.clip_by_global_norm(1.0),
+                optax.adamw(args.second_stage_lr, weight_decay=args.weight_decay),
+            ))
+        backbone_opt = nnx.Optimizer(
+            model, optax.chain(
+                optax.clip_by_global_norm(1.0),
+                optax.adamw(args.second_stage_lr, weight_decay=args.weight_decay),
+            ))
+
+        @nnx.jit
+        def train_step_s2(model_mod, head_mod, hopt, bopt, tokens, targets):
+            grads_fn = nnx.grad(loss_fn_s2, argnums=(0, 1))
+            model_grads, head_grads = grads_fn(model_mod, head_mod, tokens, targets)
+            bopt.update(model_grads)
+            hopt.update(head_grads)
+
+        best_val_s2, patience = best_val, 0
+        best_head = nnx.state(head, nnx.Param)
+        best_backbone = nnx.state(model, nnx.Param)
+        for _ in range(args.second_stage_epochs):
+            for tokens, y in _iter_batches(dfs["train"], tokenizer, args.mode,
+                                           args.batch_size, args.seed, augment=True):
+                train_step_s2(model, head, head_opt2, backbone_opt,
+                              jnp.asarray(tokens), jnp.asarray(y))
+            vr = evaluate(dfs["val"])
+            if vr > best_val_s2:
+                best_val_s2, patience = vr, 0
+                best_head = nnx.state(head, nnx.Param)
+                best_backbone = nnx.state(model, nnx.Param)
+            else:
+                patience += 1
+                if patience >= args.early_stopping_patience:
+                    break
+        nnx.update(head, best_head)
+        nnx.update(model, best_backbone)
+        best_val = best_val_s2
+        stage = "stage2"
 
     test_r = evaluate(dfs["test"])
     out_dir = Path(args.results_dir) / "ntv3" / args.tissue / args.mode / "finetune"

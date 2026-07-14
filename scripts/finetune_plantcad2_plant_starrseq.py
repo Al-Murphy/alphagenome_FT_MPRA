@@ -41,29 +41,45 @@ def load_config(path):
         return json.load(f)
 
 
+def _repo_id(model_name):
+    """The plantcaduceus config already carries the org prefix; the plantcad2 one doesn't.
+
+    Without this, ``f"{HF_ORG}/{model_name}"`` builds
+    ``kuleshov-group/kuleshov-group/PlantCaduceus_l32`` — an invalid repo id.
+    """
+    return model_name if "/" in model_name else f"{HF_ORG}/{model_name}"
+
+
 def _load_backbone(model_name, weights_dir, device):
     import torch
     from transformers import AutoModel, AutoTokenizer
 
+    repo_id = _repo_id(model_name)
     tokenizer = AutoTokenizer.from_pretrained(
-        f"{HF_ORG}/{model_name}", trust_remote_code=True, cache_dir=weights_dir,
+        repo_id, trust_remote_code=True, cache_dir=weights_dir,
     )
     model = AutoModel.from_pretrained(
-        f"{HF_ORG}/{model_name}", trust_remote_code=True, cache_dir=weights_dir,
+        repo_id, trust_remote_code=True, cache_dir=weights_dir,
     )
     model.eval().to(device)
     return model, tokenizer
 
 
 def _embed(model, input_ids):
-    """RC-invariant PlantCAD2 features: 0.5 * (fwd + flip(rc)) from the 2048-ch RCPS output."""
+    """RC-invariant PlantCAD2 features: 0.5 * (fwd + flip(rc)) from the 2048-ch RCPS output.
+
+    The RCPS backbone emits the reverse-complement half both position-reversed AND
+    channel-reversed, so undoing it means flipping BOTH axes. Flipping only the sequence
+    axis leaves the 1024 channels permuted relative to what the trained head expects,
+    which silently produces garbage features rather than an error.
+    """
     import torch
 
     out = model(input_ids=input_ids)
     hidden = out.last_hidden_state if hasattr(out, "last_hidden_state") else out[0]
     d = hidden.shape[-1] // 2
     fwd = hidden[..., :d]
-    rc = torch.flip(hidden[..., d:], dims=[1])
+    rc = torch.flip(hidden[..., d:], dims=[-2, -1])
     return 0.5 * (fwd + rc)  # (B, L, 1024)
 
 
