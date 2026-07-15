@@ -10,6 +10,24 @@ The goal is to think of any pretrained generalist model as **modular components*
 
 This approach leverages the rich sequence representations learned by large-scale generalist models while adapting them to specific regulatory tasks through task-specific prediction heads.
 
+## 🤗 Pretrained weights
+
+All fine-tuned AlphaGenome encoder checkpoints are released on the Hugging Face Hub:
+
+**[Al-Murphy/alphagenome-encoder-ft](https://huggingface.co/Al-Murphy/alphagenome-encoder-ft)** — lentiMPRA (K562 / HepG2 / WTC11), Drosophila STARR-seq (DeepSTARR), and plant STARR-seq (Jores 2021; leaf & protoplast × 3 data modes), in both JAX and PyTorch.
+
+```python
+from alphagenome_ft_mpra.hub import list_pretrained, load_pretrained
+
+list_pretrained()
+model = load_pretrained('plant-starrseq-leaf-combined')   # JAX, fine-tuned
+model = load_pretrained('mpra_K562')                      # PyTorch
+```
+
+See **[docs/model_weights.md](docs/model_weights.md)** for what each checkpoint is, its metrics, the reporter construct it expects, and the loading gotchas.
+
+> **Licence.** These are fine-tuned **derivatives of AlphaGenome**. The model parameters, their outputs, and any derivatives thereof remain subject to Google DeepMind's [AlphaGenome Model Terms](https://deepmind.google.com/science/alphagenome/model-terms) — **including the restriction to non-commercial use**. The base parameters are the property of Google LLC. Only the code in this repository is Apache-2.0. Loading also requires the base AlphaGenome weights ([`google/alphagenome-all-folds`](https://huggingface.co/google/alphagenome-all-folds)), which are access-gated.
+
 ## Installation
 
 ### Prerequisites

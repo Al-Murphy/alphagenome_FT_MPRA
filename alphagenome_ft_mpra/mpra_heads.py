@@ -647,3 +647,63 @@ class DeepSTARRHead(CustomHead):
             'dev_pearson': dev_pearson,
             'hk_pearson': hk_pearson,
         }
+
+class PlantMPRAHead(CustomHead):
+    """Head for the published plant STARR-seq (Jores 2021) AlphaGenome checkpoints.
+
+    ``LayerNorm -> flatten -> Linear(H) -> ReLU -> [dropout] -> Linear(1) -> scalar``
+
+    This is NOT interchangeable with :class:`EncoderMPRAHead`. It exists because the
+    released plant checkpoints were produced by the upstream ``autotune`` codebase,
+    whose Haiku modules are **unnamed** — so their parameters are keyed
+    ``head/mpra_head/~predict/{layer_norm, linear, linear_1}``, whereas
+    ``EncoderMPRAHead`` names its modules ``norm`` / ``hidden_0`` / ``output``. Haiku
+    restores parameters by module path, so ``EncoderMPRAHead`` cannot load them: the
+    modules below are deliberately left unnamed to reproduce those keys.
+
+    The width ``H`` was tuned per data mode by the sweep (leaf/combined 4096,
+    proto/combined 2048, the rest 1024), so it is read from ``metadata['nl_size']``
+    rather than assumed. Each released checkpoint's ``config.json`` carries the right
+    value; :func:`alphagenome_ft_mpra.hub.load_pretrained` wires it up for you.
+
+    Dropout is applied only when Haiku has an RNG stack. ``model._predict`` passes
+    ``rng=None``, so it is inactive at inference — matching how these models were
+    evaluated.
+    """
+
+    DEFAULT_HIDDEN_SIZE = 4096
+
+    def __init__(self, *, name, output_type, num_tracks, num_organisms, metadata):
+        super().__init__(
+            name=name,
+            num_tracks=num_tracks,
+            output_type=output_type,
+            num_organisms=num_organisms,
+            metadata=metadata,
+        )
+        meta = metadata or {}
+        self._hidden_size = int(meta.get('nl_size', self.DEFAULT_HIDDEN_SIZE))
+        self._do = meta.get('do', None)
+
+    def predict(self, embeddings, organism_index, **kwargs):
+        if not hasattr(embeddings, 'encoder_output') or embeddings.encoder_output is None:
+            raise ValueError(
+                'PlantMPRAHead requires encoder_output; build the model with '
+                'use_encoder_output=True.'
+            )
+        x = embeddings.encoder_output                      # (B, T, 1536)
+        x = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)(x)
+        x = x.reshape(x.shape[0], -1)                      # (B, T * 1536)
+        x = jax.nn.relu(hk.Linear(self._hidden_size)(x))
+        if self._do is not None:
+            try:
+                x = hk.dropout(hk.next_rng_key(), self._do, x)
+            except (RuntimeError, ValueError, AttributeError):
+                pass                                       # eval: no RNG stack
+        x = hk.Linear(1)(x)
+        return x.squeeze(-1)                               # (B,)
+
+    def loss(self, predictions, batch):
+        targets = batch['targets']
+        mse = jnp.mean((predictions - targets) ** 2)
+        return {'loss': mse, 'mse': mse}
