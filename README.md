@@ -343,6 +343,27 @@ To add support for another generalist seq2func model:
 
 The key principle is: **freeze the generalist backbone, train only the task-specific head**.
 
+## Citation
+
+A paper is in preparation. Until it is available, please cite the blog post:
+
+> Murphy, A., Durán, A., & Koo, P. K. (2026). *Adapting AlphaGenome to MPRA data.* Genomics x AI Blog, 20 February 2026. https://genomicsxai.github.io/blogs/2026-002/. https://doi.org/10.5281/zenodo.20272900
+
+```bibtex
+@article{Murphy2026,
+  author  = {Murphy, Alan and Dur{\'a}n, Alejandra and Koo, Peter K.},
+  title   = {Adapting AlphaGenome to MPRA data},
+  journal = {Genomics x AI Blog},
+  year    = {2026},
+  month   = {February},
+  day     = {20},
+  url     = {https://genomicsxai.github.io/blogs/2026-002/},
+  doi     = {10.5281/zenodo.20272900}
+}
+```
+
+Please also cite [AlphaGenome](https://deepmind.google.com/science/alphagenome) and the underlying datasets (Agarwal et al.; Gosai et al.; de Almeida et al.; Jores et al. 2021).
+
 ## License
 
 This project extends AlphaGenome and uses Enformer. Please refer to the original licenses:
