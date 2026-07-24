@@ -707,3 +707,58 @@ class PlantMPRAHead(CustomHead):
         targets = batch['targets']
         mse = jnp.mean((predictions - targets) ** 2)
         return {'loss': mse, 'mse': mse}
+
+
+class GosaiMPRAHead(CustomHead):
+    """Head for the released Gosai et al. lentiMPRA AlphaGenome checkpoints
+    (``Gosai-{K562,HepG2,SKNSH}-optimal``).
+
+    This is a verbatim vendoring of ``BodaFlattenHead`` (arch
+    ``boda-flatten-512-512``) from the ALBench-S2F code that produced those
+    checkpoints, so a public user can load them without that private tree:
+
+        ``LayerNorm -> flatten -> Linear(512) -> ReLU -> Linear(512) -> ReLU -> Linear(1)``
+
+    Two things make it distinct from :class:`EncoderMPRAHead` and stop the two from
+    substituting for each other:
+
+    * It uses ``hk.LayerNorm(axis=-1, create_scale=True, create_offset=True, name='norm')``,
+      **not** ``alphagenome_research``'s ``layers.LayerNorm`` — a different normalisation
+      op, so predictions would drift if you swapped classes.
+    * The hidden widths (512, 512) are hard-coded by the architecture, not taken from
+      ``metadata`` — the released ``config.json`` carries only ``task_mode`` /
+      ``dropout_rate`` / ``activation``, no ``nl_size``.
+
+    Module names (``norm`` / ``hidden_0`` / ``hidden_1`` / ``output``) reproduce the
+    keys in the saved parameter tree. Dropout only fires when ``is_training=True`` and
+    an RNG stack is present, so it is inactive at inference.
+    """
+
+    def predict(self, embeddings, organism_index, **kwargs):
+        if not hasattr(embeddings, 'encoder_output') or embeddings.encoder_output is None:
+            raise ValueError(
+                'GosaiMPRAHead requires encoder_output; build the model with '
+                'use_encoder_output=True.'
+            )
+        is_training = kwargs.get('is_training', False)
+        dropout_rate = float((self._metadata or {}).get('dropout_rate', 0.0))
+
+        x = embeddings.encoder_output                       # (B, T, 1536)
+        x = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True, name='norm')(x)
+        x = jnp.reshape(x, (x.shape[0], -1))                # boda 'flatten'
+        x = hk.Linear(512, name='hidden_0')(x)
+        if is_training and dropout_rate > 0.0:
+            x = hk.dropout(hk.next_rng_key(), dropout_rate, x)
+        x = jax.nn.relu(x)
+        x = hk.Linear(512, name='hidden_1')(x)
+        if is_training and dropout_rate > 0.0:
+            x = hk.dropout(hk.next_rng_key(), dropout_rate, x)
+        x = jax.nn.relu(x)
+        return hk.Linear(self._num_tracks, name='output')(x)
+
+    def loss(self, predictions, batch):
+        targets = batch.get('targets')
+        if targets is None:
+            return {'loss': jnp.array(0.0, dtype=jnp.float32)}
+        mse = jnp.mean((predictions - targets) ** 2)
+        return {'loss': mse, 'mse': mse}

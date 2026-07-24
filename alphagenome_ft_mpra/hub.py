@@ -56,6 +56,14 @@ CHECKPOINTS: dict[str, dict] = {
         for tissue in ('leaf', 'proto')
         for mode in ('combined', 'enhancer', 'promoter_only')
     },
+    # Gosai et al. lentiMPRA, boda-flatten-512-512 head (600 bp one-hot input).
+    **{
+        f'Gosai-{cell}-optimal': {
+            'framework': 'jax', 'path': f'jax/Gosai-{cell}-optimal',
+            'task': f'Gosai lentiMPRA {cell} activity (scalar)', 'seq_len': 600,
+        }
+        for cell in ('K562', 'HepG2', 'SKNSH')
+    },
     # --- PyTorch -----------------------------------------------------------
     'mpra_K562': {
         'framework': 'torch', 'path': 'torch/mpra_K562',
@@ -148,7 +156,7 @@ def load_pretrained(
     from alphagenome_ft import (
         HeadConfig, HeadType, register_custom_head, load_checkpoint,
     )
-    from .mpra_heads import EncoderMPRAHead, DeepSTARRHead, PlantMPRAHead
+    from .mpra_heads import EncoderMPRAHead, DeepSTARRHead, PlantMPRAHead, GosaiMPRAHead
 
     ckpt_dir = root / stage
     cfg = json.loads((ckpt_dir / 'config.json').read_text())
@@ -160,10 +168,13 @@ def load_pretrained(
             f"{name}/{stage} is a ridge probe, not a model — use load_plant_probe()."
         )
 
-    # Pick the head class the checkpoint was actually written with. The plant runs used
-    # autotune's unnamed-module head; everything else used this repo's heads.
+    # Pick the head class the checkpoint was actually written with. Each family used a
+    # different head, and they are NOT interchangeable (different module names and, for
+    # Gosai, a different LayerNorm op) — see the head docstrings.
     if name.startswith('plant-starrseq-'):
-        head_cls = PlantMPRAHead
+        head_cls = PlantMPRAHead              # autotune, unnamed Haiku modules
+    elif name.startswith('Gosai-'):
+        head_cls = GosaiMPRAHead              # ALBench-S2F boda-flatten-512-512
     elif head_cfg.get('num_tracks', 1) == 2:
         head_cls = DeepSTARRHead
     else:

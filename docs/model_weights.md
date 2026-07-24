@@ -95,6 +95,7 @@ the format `alphagenome_ft.load_checkpoint()` expects.
 | `plant-starrseq-{leaf,proto}-combined` | Jores 2021 plant STARR-seq | 437 bp |
 | `plant-starrseq-{leaf,proto}-enhancer` | " (35S enhancer construct) | 437 bp |
 | `plant-starrseq-{leaf,proto}-promoter_only` | " (core promoter) | 170 bp |
+| `Gosai-{K562,HepG2,SKNSH}-optimal` | Gosai et al. lentiMPRA | 600 bp |
 
 Plant test Pearson r (every value re-verified by loading the released checkpoint and
 re-running inference):
@@ -108,7 +109,21 @@ re-running inference):
 | proto | enhancer | 0.6870 | **0.8036** | 1024 |
 | proto | promoter_only | 0.7015 | **0.7683** | 1024 |
 
-> The four `*-optimal` runs carry no `metrics.json`; their numbers are in the paper.
+> The four lentiMPRA/DeepSTARR `*-optimal` runs carry no `metrics.json`; their numbers
+> are in the paper.
+
+Gosai et al. lentiMPRA (`Gosai-<cell>-optimal`), cell-averaged Pearson r across the
+3 cell heads (from the paper's 4-panel figure):
+
+| Panel | Probing (S1) | Fine-tuned (S2) |
+|---|---|---|
+| Genomic Reference | 0.877 | 0.910 |
+| Genomic Alternate | 0.877 | 0.910 |
+| High-Activity Designed | 0.709 | 0.776 |
+| SNV Effects (Ref−Alt) | 0.364 | 0.400 |
+
+Independently reproduced here: loading `Gosai-K562-optimal/stage2` and scoring the
+held-out chr7+13 K562 set (RC-averaged) gives Pearson **0.9195**.
 
 ---
 
@@ -129,6 +144,12 @@ cannot load them. Use `PlantMPRAHead` (what `load_pretrained` does).
 `load_checkpoint()` builds the head from the *registered* `HeadConfig`, **not** from the
 checkpoint's `config.json`. So the metadata must be registered before calling it or the
 restore dies on a shape mismatch. Again, `load_pretrained` handles this.
+
+**Gosai head is `GosaiMPRAHead`, not `EncoderMPRAHead`.** Same module names, but it uses
+`hk.LayerNorm` (not `alphagenome_research`'s `layers.LayerNorm`) and hard-codes the
+512/512 widths — the `config.json` carries no `nl_size`. `load_pretrained` selects it
+automatically. The input is a **600 bp construct**: the ~200 bp insert centred between
+fixed 200 bp 5′/3′ lentiMPRA flanks (see the `_encode_one` in the ALBench-S2F eval).
 
 **Test-set jitter (plant).** Constructs draw a random 12 bp barcode (and a random 153 bp
 filler on `noEnh` rows) at data-build time, so the test set is not byte-identical between

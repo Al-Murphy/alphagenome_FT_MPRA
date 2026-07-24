@@ -23,6 +23,7 @@ reporter tasks — more accurate than using the full model.
 Four benchmarks, in both JAX (Haiku) and PyTorch where available:
 
 - **lentiMPRA** (Agarwal et al.) — K562, HepG2, WTC11
+- **lentiMPRA** (Gosai et al.) — K562, HepG2, SKNSH
 - **Drosophila STARR-seq** (DeepSTARR; de Almeida et al.) — developmental + housekeeping
 - **Plant STARR-seq** (Jores et al. 2021) — tobacco leaf and maize protoplast, 3 data modes
 
@@ -95,6 +96,19 @@ inference.
 
 Plus `jax/{mpra-K562,mpra-HepG2,mpra-WTC11,deepstarr}-optimal` (see the paper for
 their metrics).
+
+### `jax/` — Gosai et al. lentiMPRA (`Gosai-<cell>-optimal`)
+
+Cell-averaged Pearson r (from the paper's 4-panel figure):
+
+| Panel | Probing (S1) | Fine-tuned (S2) |
+|---|---|---|
+| Genomic Reference | 0.877 | 0.910 |
+| High-Activity Designed | 0.709 | 0.776 |
+| SNV Effects (Ref−Alt) | 0.364 | 0.400 |
+
+Reproduced here: loading `Gosai-K562-optimal/stage2` and scoring the held-out chr7+13
+K562 set gives Pearson 0.9195.
 
 ## Notes
 

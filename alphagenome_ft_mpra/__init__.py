@@ -12,7 +12,7 @@ __version__ = "0.1.2"
 # the JAX-free helpers below (plant_starrseq_utils / plant_torch). So the
 # JAX-dependent exports are optional — same pattern as the torch guard.
 try:
-    from .mpra_heads import MPRAHead, EncoderMPRAHead, DeepSTARRHead, PlantMPRAHead
+    from .mpra_heads import MPRAHead, EncoderMPRAHead, DeepSTARRHead, PlantMPRAHead, GosaiMPRAHead
     from .data import (
         LentiMPRADataset,
         MPRADataLoader,
@@ -55,6 +55,7 @@ if _HAS_JAX:
         'EncoderMPRAHead',
         'DeepSTARRHead',
         'PlantMPRAHead',
+        'GosaiMPRAHead',
         'LentiMPRADataset',
         'MPRADataLoader',
         'DeepSTARRDataset',
