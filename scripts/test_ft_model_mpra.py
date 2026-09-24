@@ -344,6 +344,18 @@ def main():
         default='./data/alphagenome_folds/sequences_human.bed.gz',
         help='Local cached Borzoi fold BED defining AG fold TEST intervals.'
     )
+    parser.add_argument(
+        '--split',
+        type=str,
+        default='test',
+        choices=['train', 'val', 'test'],
+        help="Which split to score (default: test). Use 'val' for model SELECTION: "
+             "the val_pearson logged during training is batch-averaged and is biased "
+             "by batch size (larger batches score higher for free), so it must not be "
+             "used to rank configs that differ in batch size. This flag gives a "
+             "full-dataset validation score, which can be. Output filenames carry the "
+             "split name, except 'test' which keeps the original naming."
+    )
 
     args = parser.parse_args()
     
@@ -417,19 +429,21 @@ def main():
     )
     print("✓ Model loaded successfully")
 
-    # Create test dataset
-    print(f"\nLoading test dataset (cell_type={args.cell_type})...")
+    # Create evaluation dataset for the requested split.
+    # ag_test_filter_version only ever applies to the test split (LentiMPRADataset
+    # ignores it otherwise), so it is safe to pass through unchanged.
+    print(f"\nLoading {args.split} dataset (cell_type={args.cell_type})...")
     test_dataset = LentiMPRADataset(
         model=model,
         cell_type=args.cell_type,
-        split='test',
+        split=args.split,
         random_shift=False,
         reverse_complement=False,
         ag_test_filter_version=args.ag_test_filter_version,
         coords_path=args.coords_path,
         fold_intervals_path=args.fold_intervals_path,
     )
-    print(f"✓ Test dataset loaded: {len(test_dataset)} samples")
+    print(f"✓ {args.split} dataset loaded: {len(test_dataset)} samples")
     
     # Create test dataloader
     test_loader = MPRADataLoader(
@@ -461,10 +475,13 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    # Create filename from checkpoint dir name
+    # Create filename from checkpoint dir name. 'test' keeps the historical
+    # naming so existing artifacts and downstream readers are unaffected
+    # (create_mpra_comparison_table.py globs *_test_metrics.csv).
     checkpoint_name = Path(args.checkpoint_dir).name
-    predictions_file = output_dir / f"{checkpoint_name}_{args.cell_type}_test_predictions.csv"
-    metrics_file = output_dir / f"{checkpoint_name}_{args.cell_type}_test_metrics.csv"
+    split_tag = 'test' if args.split == 'test' else args.split
+    predictions_file = output_dir / f"{checkpoint_name}_{args.cell_type}_{split_tag}_predictions.csv"
+    metrics_file = output_dir / f"{checkpoint_name}_{args.cell_type}_{split_tag}_metrics.csv"
     
     print(f"\nSaving predictions to {predictions_file}...")
     

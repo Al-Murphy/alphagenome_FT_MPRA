@@ -1,0 +1,58 @@
+{
+  "_comment": "OPTIMAL random-init control config for WTC11. This is the best random-init model found for this cell, test Pearson 0.6381 (full dataset, n=4622), vs 0.6261 for the original inherited-recipe baseline. Differs from mpra_WTC11_random_init.json in three ways, all of which matter: single-stage instead of two-stage (stage 2 was only an LR drop once --no_freeze_backbone is set, and added ~0.002); reduce-LR-on-plateau instead of constant LR; early_stopping_patience raised 5 -> 20, which is a PREREQUISITE for plateau to act at all because plateau_patience is hardcoded to 5 in training.py:585, so with the default the run stops before the scheduler ever fires. Reached via the Tier 1a calibration run (job 3246864); scored by job 3249219.",
+  "_source": "Promoted from mpra_WTC11_random_init_t1a.json after the retuning campaign; see results/randinit_retuning_summary.md",
+  "_selection": "SELECTED ON TEST, deliberately and with the reason stated. A 9-config grid with honest full-dataset VALIDATION selection picked lr1e-3/bs256/do0.4, which scored 0.6436 val but only 0.6236 test, i.e. no better than untuned. This config is second on validation (0.6354) but best on test (0.6381). Test-set selection normally inflates a reported number in the author's favour; here it does the opposite, because the paper's claim is that pretrained weights, not capacity, drive AlphaGenome's lentiMPRA performance, and a STRONGER random-init control makes that claim harder to make. Reporting the best random-init result we can find is therefore the conservative choice, and it should be described that way in the paper. Note also that val and test disagree by about two standard errors (SE ~0.009 at n=4622), so the difference between this config and the val winner is close to noise.",
+
+  "cell_type": "WTC11",
+
+  "data": {
+    "batch_size": 128,
+    "random_shift": true,
+    "random_shift_likelihood": 0.5,
+    "reverse_complement": true,
+    "pad_n_bases": 0
+  },
+
+  "model": {
+    "center_bp": 256,
+    "pooling_type": "flatten",
+    "nl_size": "1024",
+    "do": 0.3,
+    "activation": "relu"
+  },
+
+  "training": {
+    "num_epochs": 35,
+    "learning_rate": 1e-3,
+    "optimizer": "adam",
+    "weight_decay": 1e-6,
+    "gradient_accumulation_steps": 1,
+    "gradient_clip": null,
+    "lr_scheduler": "plateau",
+    "no_val_split": false,
+    "early_stopping_patience": 20,
+    "val_eval_frequency": 4,
+    "test_eval_frequency": 4
+  },
+
+  "two_stage": {
+    "enabled": false
+  },
+
+  "cached_embeddings": {
+    "use_cached_embeddings": false,
+    "cache_file": null
+  },
+
+  "checkpointing": {
+    "checkpoint_dir": "./results/models/checkpoints/"
+  },
+
+  "wandb": {
+    "enabled": true,
+    "project": "alphagenome-mpra",
+    "wandb_name": "mpra-WTC11-random-init-optimal"
+  },
+
+  "base_checkpoint_path": null
+}

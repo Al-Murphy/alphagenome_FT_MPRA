@@ -71,7 +71,21 @@ def load_lentimpra_data(csv_path=None):
         {'model': 'AG MPRA', 'regime': 'Fine-tuned', 'cell_type': 'HepG2', 'pearson_r': 0.887},
         {'model': 'AG MPRA', 'regime': 'Fine-tuned', 'cell_type': 'K562', 'pearson_r': 0.879},
         {'model': 'AG MPRA', 'regime': 'Fine-tuned', 'cell_type': 'WTC11', 'pearson_r': 0.839},
-        # AlphaGenome random initialisation
+        # AlphaGenome random initialisation.
+        #
+        # These are the ORIGINAL (2026-05) values, from runs that inherited the
+        # hyperparameters tuned for the PRETRAINED encoder. A retuning campaign is
+        # replacing them cell by cell; see results/randinit_retuned_values.csv for
+        # the live table and results/randinit_retuning_summary.md for the reasoning.
+        #
+        #   cell    original  retuned  status
+        #   WTC11     0.626    0.638   DONE  (configs/mpra_WTC11_random_init_optimal.json)
+        #   HepG2     0.661      -     pending
+        #   K562      0.697      -     pending
+        #
+        # DO NOT update these one at a time: a Random Init row mixing tuned and
+        # untuned cells is not a like-for-like comparison. Swap all three together
+        # once HepG2 and K562 finish, then regenerate the figure.
         {'model': 'AG MPRA', 'regime': 'Random Init', 'cell_type': 'HepG2', 'pearson_r': 0.661},
         {'model': 'AG MPRA', 'regime': 'Random Init', 'cell_type': 'K562', 'pearson_r': 0.697},
         {'model': 'AG MPRA', 'regime': 'Random Init', 'cell_type': 'WTC11', 'pearson_r': 0.626},
