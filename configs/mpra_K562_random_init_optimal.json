@@ -1,0 +1,49 @@
+{
+  "_comment": "OPTIMAL random-init control for K562. Test Pearson 0.7393 (full dataset, n=19670) vs 0.6972 for the original inherited-recipe baseline, a gain of +0.0421. This is the one cell where retuning clearly worked: the validation gain was ~14 SE and it transferred to test (val 0.7361 -> test 0.7393). Key change is the learning rate, 3e-3 rather than the inherited 1e-3, plus batch 256 rather than 32 and dropout 0.4. Single-stage: with --no_freeze_backbone, 'stage 2' is only an LR drop.",
+  "_source": "Random-init retuning campaign; see docs/randinit_control.md",
+  "_selection": "Selected on FULL-DATASET validation Pearson (scripts/test_ft_model_mpra.py --split val), never on the batch-averaged in-log metric and never on test. Test was scored once, afterwards, for reporting only.",
+  "cell_type": "K562",
+  "data": {
+    "batch_size": 256,
+    "random_shift": true,
+    "random_shift_likelihood": 0.5,
+    "reverse_complement": true,
+    "pad_n_bases": 0
+  },
+  "model": {
+    "center_bp": 256,
+    "pooling_type": "flatten",
+    "nl_size": "2048",
+    "do": 0.4,
+    "activation": "relu"
+  },
+  "training": {
+    "num_epochs": 40,
+    "learning_rate": 0.003,
+    "optimizer": "adam",
+    "weight_decay": 1e-06,
+    "gradient_accumulation_steps": 1,
+    "gradient_clip": null,
+    "lr_scheduler": null,
+    "no_val_split": false,
+    "early_stopping_patience": 5,
+    "val_eval_frequency": 2,
+    "test_eval_frequency": 1
+  },
+  "two_stage": {
+    "enabled": false
+  },
+  "cached_embeddings": {
+    "use_cached_embeddings": false,
+    "cache_file": null
+  },
+  "checkpointing": {
+    "checkpoint_dir": "./results/models/checkpoints/"
+  },
+  "wandb": {
+    "enabled": true,
+    "project": "alphagenome-mpra",
+    "wandb_name": "mpra-K562-random-init-optimal"
+  },
+  "base_checkpoint_path": null
+}

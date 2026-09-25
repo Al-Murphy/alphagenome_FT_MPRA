@@ -1,0 +1,51 @@
+{
+  "_comment": "OPTIMAL random-init control for HepG2 - which is the ORIGINAL recipe, unchanged. Retuning did NOT beat it: a 9-config grid's validation winner (lr3e-3/bs256/do0.2, val 0.6639 vs baseline 0.6538) scored only 0.6576 on test, BELOW this config's 0.6613. The validation gain was ~2 SE and did not transfer. This file exists so all three cells share the *_random_init_optimal.json convention; its contents are identical to mpra_HepG2_random_init.json.",
+  "_source": "Random-init retuning campaign concluded no change was warranted; see docs/randinit_control.md",
+  "cell_type": "HepG2",
+  "data": {
+    "batch_size": 1024,
+    "random_shift": true,
+    "random_shift_likelihood": 0.5,
+    "reverse_complement": true,
+    "pad_n_bases": 0
+  },
+  "model": {
+    "center_bp": 256,
+    "pooling_type": "flatten",
+    "nl_size": "1024",
+    "do": 0.1,
+    "activation": "relu"
+  },
+  "training": {
+    "num_epochs": 100,
+    "learning_rate": 0.0003,
+    "optimizer": "adam",
+    "weight_decay": 1e-06,
+    "gradient_accumulation_steps": 1,
+    "gradient_clip": null,
+    "lr_scheduler": null,
+    "no_val_split": false,
+    "early_stopping_patience": 5,
+    "val_eval_frequency": 4,
+    "test_eval_frequency": 4
+  },
+  "two_stage": {
+    "enabled": true,
+    "second_stage_lr": 0.0003,
+    "second_stage_epochs": 50
+  },
+  "cached_embeddings": {
+    "use_cached_embeddings": false,
+    "cache_file": null
+  },
+  "checkpointing": {
+    "checkpoint_dir": "./results/models/checkpoints/"
+  },
+  "wandb": {
+    "enabled": true,
+    "project": "alphagenome-mpra",
+    "wandb_name": "mpra-HepG2-random-init-optimal"
+  },
+  "base_checkpoint_path": null,
+  "_selection": "Grid selected on full-dataset validation Pearson; its winner then lost to this config on test, so the original recipe is retained as the best known."
+}

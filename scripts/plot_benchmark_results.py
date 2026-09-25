@@ -71,24 +71,26 @@ def load_lentimpra_data(csv_path=None):
         {'model': 'AG MPRA', 'regime': 'Fine-tuned', 'cell_type': 'HepG2', 'pearson_r': 0.887},
         {'model': 'AG MPRA', 'regime': 'Fine-tuned', 'cell_type': 'K562', 'pearson_r': 0.879},
         {'model': 'AG MPRA', 'regime': 'Fine-tuned', 'cell_type': 'WTC11', 'pearson_r': 0.839},
-        # AlphaGenome random initialisation.
+        # AlphaGenome random initialisation - RETUNED (2026-09).
         #
-        # These are the ORIGINAL (2026-05) values, from runs that inherited the
-        # hyperparameters tuned for the PRETRAINED encoder. A retuning campaign is
-        # replacing them cell by cell; see results/randinit_retuned_values.csv for
-        # the live table and results/randinit_retuning_summary.md for the reasoning.
+        # The original 2026-05 control inherited hyperparameters chosen for the
+        # PRETRAINED encoder, which made it open to the charge of being
+        # under-tuned. Each cell was then given its own grid over learning rate,
+        # batch size and dropout, selected on FULL-DATASET validation Pearson and
+        # scored once on test. Configs: configs/mpra_<cell>_random_init_optimal.json.
+        # Full write-up: docs/randinit_control.md.
         #
-        #   cell    original  retuned  status
-        #   WTC11     0.626    0.638   DONE  (configs/mpra_WTC11_random_init_optimal.json)
-        #   HepG2     0.661      -     pending
-        #   K562      0.697      -     pending
+        #   cell    original  adopted  outcome
+        #   HepG2     0.661    0.661   tuning LOST on test (grid winner 0.658); original kept
+        #   K562      0.697    0.739   +0.042, ~14 SE on val and it transferred
+        #   WTC11     0.626    0.638   +0.012, within ~2 SE
         #
-        # DO NOT update these one at a time: a Random Init row mixing tuned and
-        # untuned cells is not a like-for-like comparison. Swap all three together
-        # once HepG2 and K562 finish, then regenerate the figure.
+        # Each cell reports the BEST random-init model found for it, which is the
+        # conservative choice: a stronger control makes the paper's "pretraining,
+        # not capacity" claim harder, not easier.
         {'model': 'AG MPRA', 'regime': 'Random Init', 'cell_type': 'HepG2', 'pearson_r': 0.661},
-        {'model': 'AG MPRA', 'regime': 'Random Init', 'cell_type': 'K562', 'pearson_r': 0.697},
-        {'model': 'AG MPRA', 'regime': 'Random Init', 'cell_type': 'WTC11', 'pearson_r': 0.626},
+        {'model': 'AG MPRA', 'regime': 'Random Init', 'cell_type': 'K562', 'pearson_r': 0.739},
+        {'model': 'AG MPRA', 'regime': 'Random Init', 'cell_type': 'WTC11', 'pearson_r': 0.638},
     ]
     
     df = pd.DataFrame(data)

@@ -34,15 +34,29 @@ the one to use.
 Full-dataset Pearson r on the LegNet fold-10 test split, from
 `scripts/test_ft_model_mpra.py`.
 
-| Cell | Original control | Retuned control | Baselines for context |
-|---|---|---|---|
-| WTC11 | 0.6261 | **0.6381** | MPRALegNet 0.727, AG probing 0.8294, AG fine-tuned 0.8394 |
-| HepG2 | 0.6613 | *pending* | MPRALegNet 0.781, AG probing 0.8643, AG fine-tuned 0.8874 |
-| K562 | 0.6972 | *pending* | MPRALegNet 0.810, AG probing 0.8532, AG fine-tuned 0.8793 |
+| Cell | Original control | Retuned, adopted | MPRALegNet | AG probing | AG fine-tuned |
+|---|---|---|---|---|---|
+| HepG2 | 0.6613 | **0.6613** (unchanged) | 0.781 | 0.8643 | 0.8874 |
+| K562 | 0.6972 | **0.7393** (+0.042) | 0.810 | 0.8532 | 0.8793 |
+| WTC11 | 0.6261 | **0.6381** (+0.012) | 0.727 | 0.8294 | 0.8394 |
 
-The conclusion is unchanged by retuning: a 90M-parameter randomly initialised
-encoder trained from scratch lands far below a 1.33M-parameter purpose-built CNN,
-so capacity is not what drives AlphaGenome's result.
+Retuning helped exactly one cell, and the pattern follows training-set size
+(K562 314,656 > HepG2 196,672 > WTC11 73,886):
+
+- **K562** gained 0.042. The learning rate is the lever: 3e-3 rather than the
+  inherited 1e-3, with batch 256 and dropout 0.4. The validation gain was about
+  14 standard errors and transferred cleanly to test.
+- **HepG2** gained nothing. Its grid winner led on validation by about 2 standard
+  errors but scored 0.6576 on test, *below* the 0.6613 baseline, so the original
+  recipe is retained.
+- **WTC11** gained 0.012, which is close to noise at this split size.
+
+**The conclusion survives retuning, but the margin is smaller than first
+reported.** Even at its best, a 90M-parameter randomly initialised encoder
+trained from scratch stays below a 1.33M-parameter purpose-built CNN on every
+cell, and 0.14 to 0.23 below the fine-tuned AlphaGenome encoder. Capacity is not
+what drives the result. The honest caveat is that K562's control is now 0.042
+stronger than originally published, so quote the retuned numbers.
 
 ### WTC11 retuning, in brief
 
