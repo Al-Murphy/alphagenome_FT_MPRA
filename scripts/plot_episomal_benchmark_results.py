@@ -410,9 +410,16 @@ def plot_episomal_cell_averaged(df: pd.DataFrame, figsize=(9, 6),
     ax.set_axisbelow(True)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
-    ax.legend(loc="upper left", bbox_to_anchor=(1.01, 1.0),
-              frameon=False, fontsize=12, ncol=1,
-              handlelength=2.2, handleheight=0.7, borderaxespad=0.3)
+    # Split legend into the empty upper space of the two short right-hand
+    # clusters: 4 models above "SNV Effects", 2 above "High-Activity Designed",
+    # so it slots into the panel without overlapping any bars or widening it.
+    handles, labels = ax.get_legend_handles_labels()
+    leg_kw = dict(loc="upper center", frameon=False, fontsize=11, ncol=1,
+                  handlelength=1.6, handleheight=0.9, labelspacing=0.35,
+                  borderaxespad=0.2)
+    leg1 = ax.legend(handles[:4], labels[:4], bbox_to_anchor=(0.635, 1.0), **leg_kw)
+    ax.add_artist(leg1)
+    ax.legend(handles[4:], labels[4:], bbox_to_anchor=(0.88, 1.0), **leg_kw)
     fig.tight_layout()
     return fig
 
