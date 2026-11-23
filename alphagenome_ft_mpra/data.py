@@ -14,6 +14,52 @@ from alphagenome_research.model import dna_model
 from Bio import SeqIO
 
 
+# --- lentiMPRA reporter construct (Agarwal et al. 2025) ----------------------
+#
+# Everything the library PCRs add after the right adapter, read 5'->3' ON THE
+# REPORTER STRAND: the minimal promoter in sense orientation, the spacer, the
+# barcode readout primer site, then the 15 nt random barcode (written N, since
+# it differs per molecule).
+#
+# Derived by reverse-complementing the two reverse primers of Supplementary
+# Table S13 (`minP-enh-r`, `pLSmP-bc-primer-r`) and joining them on their 15 nt
+# overlap. Table S13 writes reverse primers 5'->3' on the strand OPPOSITE the
+# reporter, so they must be reverse-complemented before they describe the
+# construct. Two checks that the orientation is right:
+#   * RC(minP-enh-r) begins with RIGHT_ADAPTER, i.e. the primer anneals there;
+#   * continued past the barcode the sequence reads ACCGGT (AgeI) + CGCCACC
+#     (Kozak) + ATG, the EGFP start codon of the pLS reporter.
+LENTIMPRA_DOWNSTREAM = (
+    "CACTAGAGGGTATATAATGGAAGCTCGACTTCCAG"  # CAC + minimal promoter, sense
+    "CTTGGCAATCCGGTACTGT"                  # spacer
+    "GCAAAGTGAACACATCGCTAAGCGAAAGC"        # barcode readout primer site
+    "TAAG"
+    "NNNNNNNNNNNNNNN"                      # barcode, random per molecule
+)
+
+# The 51 bp that fill a 281 bp model input after the 230 bp assayed element
+# (left adapter + 200 bp CRE + right adapter, already in the `seq` column).
+# The window ends inside the spacer; the barcode lies further downstream and is
+# outside it, so no N ever reaches the model.
+LENTIMPRA_SUFFIX = LENTIMPRA_DOWNSTREAM[:51]
+
+# The suffix used before the orientation was corrected. It is the last 36 nt of
+# the reverse primer `minP-enh-r` copied WITHOUT reverse-complementing it, plus
+# a fixed placeholder barcode. Read on the reporter strand it repeats the right
+# adapter (reverse-complemented) and then 21 nt of the minimal promoter
+# backwards; the near-palindromic TATATA is why it passes a glance.
+#
+# Kept ONLY so checkpoints trained before the correction still reproduce their
+# published numbers. Scoring such a checkpoint with LENTIMPRA_SUFFIX instead
+# costs ~0.02 Pearson (measured on the released K562 model: 0.8793 -> 0.8601,
+# against 0.8555 for a composition-matched scramble), i.e. the encoder is keyed
+# to the exact constant tail it was trained on. Do not mix them.
+LENTIMPRA_SUFFIX_LEGACY = (
+    "TCCATTATATACCCTCTAGTGTCGGTTCACGCAATG"  # RC'd right adapter + minP backwards
+    "AGAGACTGAGGCCAC"                        # fixed placeholder barcode
+)
+
+
 class LentiMPRADataset:
     def __init__(
         self,
@@ -24,8 +70,9 @@ class LentiMPRADataset:
         test_fold: int = [10],
         val_fold: int = [1],
         train_fold: int = [2, 3, 4, 5, 6, 7, 8, 9],
-        promoter_seq: str = "TCCATTATATACCCTCTAGTGTCGGTTCACGCAATG",
-        rand_barcode: str = "AGAGACTGAGGCCAC",
+        construct_suffix: str | None = None,
+        promoter_seq: str | None = None,
+        rand_barcode: str | None = None,
         organism: dna_model.Organism = dna_model.Organism.HOMO_SAPIENS,
         random_shift: bool = False,
         random_shift_likelihood: float = 0.5,
@@ -53,8 +100,24 @@ class LentiMPRADataset:
         self.val_fold = val_fold
         self.train_fold = train_fold
         self.chosen_fold = train_fold if split == "train" else val_fold if split == "val" else test_fold
-        self.promoter_seq = promoter_seq
-        self.rand_barcode = rand_barcode
+        # Resolve the constant tail appended after the 230 bp assayed element.
+        # Explicit construct_suffix wins; the historical promoter_seq/rand_barcode
+        # pair still works for callers that pin the construct that way; otherwise
+        # the corrected reporter-strand sequence is used. Scoring a checkpoint
+        # under a tail other than the one it was trained on costs ~0.02 Pearson,
+        # so callers loading a pre-correction checkpoint must pass
+        # LENTIMPRA_SUFFIX_LEGACY explicitly.
+        if construct_suffix is not None:
+            resolved_suffix = construct_suffix
+        elif promoter_seq is not None or rand_barcode is not None:
+            resolved_suffix = (promoter_seq or "") + (rand_barcode or "")
+        else:
+            resolved_suffix = LENTIMPRA_SUFFIX
+        self.construct_suffix = resolved_suffix
+        # Kept as attributes because downstream code (attributions, embedding
+        # caching) reads them and concatenates them in this order.
+        self.promoter_seq = resolved_suffix
+        self.rand_barcode = ""
         # model used for ohe
         self.model = model
         self.organism = organism

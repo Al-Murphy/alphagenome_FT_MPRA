@@ -1,0 +1,51 @@
+{
+  "_comment": "LentiMPRA K562 retrained on the CORRECTED reporter construct. Identical to mpra_K562.json except for the construct and the run name. The previous runs appended the tail of the Table S13 reverse primer minP-enh-r without reverse-complementing it; this uses the reporter-strand sequence (minimal promoter in sense orientation, then the spacer).",
+  "_source": "mpra_K562.json + corrected lentiMPRA construct",
+  "cell_type": "K562",
+  "data": {
+    "batch_size": 32,
+    "random_shift": true,
+    "random_shift_likelihood": 0.5,
+    "reverse_complement": true,
+    "pad_n_bases": 0,
+    "construct_suffix": null
+  },
+  "model": {
+    "center_bp": 256,
+    "pooling_type": "flatten",
+    "nl_size": "2048",
+    "do": 0.4,
+    "activation": "relu"
+  },
+  "training": {
+    "num_epochs": 100,
+    "learning_rate": 0.001,
+    "optimizer": "adam",
+    "weight_decay": 1e-06,
+    "gradient_accumulation_steps": 1,
+    "gradient_clip": null,
+    "lr_scheduler": null,
+    "no_val_split": false,
+    "early_stopping_patience": 5,
+    "val_eval_frequency": 4,
+    "test_eval_frequency": 4
+  },
+  "two_stage": {
+    "enabled": true,
+    "second_stage_lr": 1e-05,
+    "second_stage_epochs": 50
+  },
+  "cached_embeddings": {
+    "use_cached_embeddings": false,
+    "cache_file": null
+  },
+  "checkpointing": {
+    "checkpoint_dir": "./results/models/checkpoints/"
+  },
+  "wandb": {
+    "enabled": true,
+    "project": "alphagenome-mpra",
+    "wandb_name": "mpra-K562-optimal-fixedconstruct"
+  },
+  "base_checkpoint_path": null
+}

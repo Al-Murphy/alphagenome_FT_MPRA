@@ -123,8 +123,16 @@ K562 set gives Pearson 0.9195.
 - **Plant head width varies per cell** (4096 / 2048 / 1024). It's recorded in each
   checkpoint's `config.json`; don't assume a default.
 - **Inputs are reporter constructs**, not bare genomic sequence — each checkpoint expects
-  the construct it was trained on (promoter+barcode, library adapters, or 35S
-  enhancer + core promoter + 5′ UTR + barcode). See the repo docs.
+  the construct it was trained on (the 230 bp element plus a 51 bp constant tail for
+  lentiMPRA, library adapters for DeepSTARR, or 35S enhancer + core promoter + 5′ UTR +
+  barcode for plant). See the repo docs.
+- **lentiMPRA: two tails exist, and they are not interchangeable.** The `mpra_*` /
+  `mpra-*-optimal` checkpoints were trained on a tail taken from the Agarwal et al. 2025
+  Table S13 reverse primer `minP-enh-r` copied without reverse-complementing it, so it
+  repeats the right adapter and runs the minimal promoter backwards. The corrected tail
+  (minimal promoter in sense orientation, then the spacer) is now the library default.
+  Scoring these checkpoints with the corrected tail costs ~0.02 Pearson
+  (K562: 0.8793 → 0.8601), so score them with `LENTIMPRA_SUFFIX_LEGACY`.
 - Plant test constructs use a random barcode per row, so Pearson reproduces to ~±0.0001;
   quote plant numbers to 3 decimals.
 

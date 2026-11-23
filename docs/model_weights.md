@@ -177,10 +177,23 @@ filler on `noEnh` rows) at data-build time, so the test set is not byte-identica
 builds. Pearson reproduces to ~±0.0001 — quote plant numbers to 3 decimals.
 
 **Input constructs matter.** Each checkpoint expects the construct it was trained on
-(promoter + barcode for lentiMPRA; library adapters for DeepSTARR; 35S enhancer + core
-promoter + 5' UTR + barcode for plant). The torch checkpoints bundle a `ConstructSpec` —
-use `predict_sequences(..., construct_mode=...)` and it assembles them for you. See
+(the 230 bp element plus a 51 bp constant tail for lentiMPRA; library adapters for
+DeepSTARR; 35S enhancer + core promoter + 5' UTR + barcode for plant). The torch
+checkpoints bundle a `ConstructSpec` — use `predict_sequences(..., construct_mode=...)`
+and it assembles them for you. See
 [plant_starrseq_caveats.md](plant_starrseq_caveats.md) for the plant construct.
+
+> **lentiMPRA: two different tails exist — do not mix them.** The `mpra-*-optimal` and
+> torch `mpra_*` checkpoints listed above were trained on a tail built from the Agarwal
+> et al. 2025 Table S13 reverse primer `minP-enh-r` copied *without* reverse-complementing
+> it, so it repeats the right adapter and runs the minimal promoter backwards. The
+> corrected tail (`LENTIMPRA_SUFFIX`: minimal promoter in sense orientation, then the
+> spacer) is now the default in `LentiMPRADataset`. Scoring one of the checkpoints above
+> with the corrected tail costs ~0.02 Pearson (released K562: 0.8793 → 0.8601), so they
+> must be scored with `LENTIMPRA_SUFFIX_LEGACY`. `test_ft_model_mpra.py` does this
+> automatically: it reads the construct from the checkpoint and falls back to the legacy
+> tail for checkpoints that predate pinning. Full account in
+> [lentimpra_construct_audit.md](lentimpra_construct_audit.md).
 
 ## Reproducing
 

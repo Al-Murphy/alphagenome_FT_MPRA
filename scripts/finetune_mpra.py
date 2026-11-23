@@ -86,6 +86,7 @@ from alphagenome_ft import (
     create_model_with_custom_heads,
 )
 from alphagenome_ft_mpra import EncoderMPRAHead, LentiMPRADataset, MPRADataLoader, train
+from alphagenome_ft_mpra.data import LENTIMPRA_SUFFIX, LENTIMPRA_SUFFIX_LEGACY
 
 
 PROMOTER_CONSTRUCT_LENGTH = 281
@@ -121,6 +122,7 @@ def apply_config_to_args(args, config: dict):
         args.random_shift_likelihood = data_config.get('random_shift_likelihood', args.random_shift_likelihood)
         args.reverse_complement = data_config.get('reverse_complement', args.reverse_complement)
         args.pad_n_bases = data_config.get('pad_n_bases', args.pad_n_bases)
+        args.construct_suffix = data_config.get('construct_suffix', args.construct_suffix)
     
     # Apply model config
     if 'model' in config:
@@ -243,6 +245,16 @@ def main():
         type=int,
         default=0,
         help='Number of bases to pad on each side of the sequence'
+    )
+    parser.add_argument(
+        '--construct_suffix',
+        type=str,
+        default=None,
+        help="Constant tail appended after the 230 bp assayed element to form the "
+             "281 bp input. Defaults to the corrected reporter-strand sequence "
+             "(LENTIMPRA_SUFFIX). Pass 'legacy' to reproduce checkpoints trained "
+             "before the construct orientation was corrected. The resolved value is "
+             "written into the checkpoint so evaluation cannot silently mismatch it."
     )
     parser.add_argument(
         '--no_freeze_backbone',
@@ -668,7 +680,19 @@ def main():
             nl_size = int(args.nl_size)
     except ValueError:
         raise ValueError(f"Invalid nl_size format: {args.nl_size}. Use single int (e.g., '1024') or comma-separated list (e.g., '512,256')")
-    
+
+    # Resolve the reporter construct once, so training and the saved checkpoint
+    # agree by construction.
+    if args.construct_suffix is None:
+        construct_suffix = LENTIMPRA_SUFFIX
+    elif args.construct_suffix.lower() == 'legacy':
+        construct_suffix = LENTIMPRA_SUFFIX_LEGACY
+    else:
+        construct_suffix = args.construct_suffix
+    print(f"Reporter construct suffix ({len(construct_suffix)} bp): {construct_suffix}"
+          + ("  [LEGACY, pre-correction]"
+             if construct_suffix == LENTIMPRA_SUFFIX_LEGACY else ""))
+
     # Register custom MPRA head
     print("Registering custom MPRA head...")
     register_custom_head(
@@ -685,6 +709,10 @@ def main():
                 'nl_size': nl_size,
                 'do': args.do,
                 'activation': args.activation,
+                # Pin the reporter construct into the checkpoint. Evaluation reads
+                # this back, so a checkpoint can never be silently scored under a
+                # different tail (which costs ~0.02 Pearson).
+                'construct_suffix': construct_suffix,
             }
         )
     )
@@ -801,7 +829,8 @@ def main():
         reverse_complement=args.reverse_complement if not args.use_cached_embeddings else False,
         use_cached_embeddings=args.use_cached_embeddings,
         cache_file=args.cache_file if args.use_cached_embeddings else None,
-        pad_n_bases=args.pad_n_bases
+        pad_n_bases=args.pad_n_bases,
+        construct_suffix=construct_suffix
     )
     # Determine cache files for val and test splits
     val_cache_file = None
@@ -826,7 +855,8 @@ def main():
             reverse_complement=False,
             use_cached_embeddings=args.use_cached_embeddings,
             cache_file=val_cache_file,
-            pad_n_bases=args.pad_n_bases
+            pad_n_bases=args.pad_n_bases,
+            construct_suffix=construct_suffix,
         )
     
     test_dataset = LentiMPRADataset(
@@ -838,6 +868,7 @@ def main():
         use_cached_embeddings=args.use_cached_embeddings,
         cache_file=test_cache_file,
         pad_n_bases=args.pad_n_bases,
+        construct_suffix=construct_suffix,
         ag_test_filter_version=args.ag_test_filter_version,
         coords_path=args.coords_path,
         fold_intervals_path=args.fold_intervals_path,
