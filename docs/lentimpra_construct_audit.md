@@ -268,29 +268,33 @@ The manuscript text, the figures and the tables were updated on 2026-11-25, and 
 internal planning note that tracked that work has been removed. What it listed and is
 still outstanding:
 
-- **`/grid/koo/home/shared/models/alphagenome_encoder/torch/README.md`** still documents
-  the legacy tail as if it were correct. The file is owned by another user and is not
-  group-writable, so its owner has to make the change. `jax/README.md` is updated.
-- **The PyTorch checkpoints are still on the legacy construct**, in both places they are
-  published. Retraining is under way in `alphagenome-encoder-ft` (branch
-  `lentimpra-match-jax`, fold splits, configs mirroring the JAX ones). Once they land,
-  update **both**:
-  - `/grid/koo/home/shared/models/alphagenome_encoder/torch/mpra_{HepG2,K562,WTC11}/`
-    (`frozen_encoder.pt` + `finetuned_encoder.pt` in each). Preserve the current ones as
-    `mpra_<cell>_legacyconstruct`, as was done on the JAX side. Note these directories
-    are owned by `duran`, not by us — the parent `torch/` directory is group-writable, so
-    they can be renamed and replaced, but the originals are someone else's files.
-  - Hugging Face `Al-Murphy/alphagenome-encoder-ft`, `torch/mpra_<cell>`, by re-running
-    `scripts/upload_weights_to_hf.py` after the shared folder is updated. Add the
-    `*_legacyconstruct` directories to its `EXCLUDE` set, as the JAX ones are.
+- **Everything else is done.** The PyTorch checkpoints were retrained on 2026-11-25
+  (`alphagenome-encoder-ft`, branch `lentimpra-match-jax`, fold splits, configs mirroring
+  the JAX ones) and are published in both places: the shared folder at
+  `/grid/koo/home/shared/models/alphagenome_encoder/torch/mpra_<cell>/` and Hugging Face
+  `Al-Murphy/alphagenome-encoder-ft` under `torch/mpra_<cell>`. The pre-correction weights
+  are kept as `mpra_<cell>_legacyconstruct/` and excluded from the upload. The shared
+  `torch/README.md` and the model card are updated, so every published lentiMPRA
+  checkpoint now uses the corrected tail.
 
-  The model card already states which framework uses which tail; update it once they
-  match.
+  Full-split test Pearson, forward-only, on the publication's fold 10:
 
-  The JAX half of this is done: shared `jax/mpra-<cell>-optimal` and the Hugging Face
-  `jax/` models carry the corrected construct, with the pre-correction weights kept
-  beside them as `jax/mpra-<cell>-optimal-legacyconstruct` (shared folder only, not
-  published).
+  | | released torch (legacy) | JAX (corrected) | PyTorch (corrected) |
+  |---|---|---|---|
+  | HepG2 probing | 0.8688 | 0.8643 | 0.8681 |
+  | HepG2 fine-tuned | 0.8876 | 0.8885 | 0.8880 |
+  | K562 probing | 0.8580 | 0.8555 | 0.8528 |
+  | K562 fine-tuned | 0.8785 | 0.8801 | 0.8806 |
+  | WTC11 probing | 0.8278 | 0.8299 | 0.8324 |
+  | WTC11 fine-tuned | 0.8344 | 0.8403 | 0.8411 |
+
+  The three fine-tuned arms agree within 0.001 across frameworks. Two things to know when
+  comparing against the released PyTorch checkpoints: **K562's head also changed**
+  (`[2048, 1024]` gelu from the autotune sweep, now `[2048]` relu to match JAX), and the new
+  lentiMPRA files use the **v1 checkpoint schema** (`construct` rather than
+  `construct_config`, and no `metrics`/`epoch`/`stage` keys), so code written against the
+  old files needs `convert_checkpoint_v0.py` or an update.
+
 - **Table S5 must not be regenerated from the new CAGI5 CSVs** — see the note below.
 
 ### Table S5 inference speed: keep the published numbers

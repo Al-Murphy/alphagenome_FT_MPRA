@@ -37,6 +37,9 @@ EXCLUDE = {
     'jax/mpra-HepG2-optimal-legacyconstruct',
     'jax/mpra-K562-optimal-legacyconstruct',
     'jax/mpra-WTC11-optimal-legacyconstruct',
+    'torch/mpra_HepG2_legacyconstruct',
+    'torch/mpra_K562_legacyconstruct',
+    'torch/mpra_WTC11_legacyconstruct',
 }
 
 

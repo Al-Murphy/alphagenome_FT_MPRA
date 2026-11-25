@@ -74,9 +74,9 @@ for the manual path and the gotchas.
 
 | Checkpoint | Task | frozen | fine-tuned |
 |---|---|---|---|
-| `mpra_K562` | lentiMPRA K562 | 0.8580 | **0.8785** |
-| `mpra_HepG2` | lentiMPRA HepG2 | 0.8688 | **0.8876** |
-| `mpra_WTC11` | lentiMPRA WTC11 | 0.8278 | **0.8344** |
+| `mpra_K562` | lentiMPRA K562 | 0.8528 | **0.8806** |
+| `mpra_HepG2` | lentiMPRA HepG2 | 0.8681 | **0.8880** |
+| `mpra_WTC11` | lentiMPRA WTC11 | 0.8324 | **0.8411** |
 | `starrseq_drosophila` | DeepSTARR (dev + hk) | 0.6184 | **0.7468** |
 | `jores_multicondition` | Jores 2026 plant MPRA (5 cond.) | — | **0.841** |
 
@@ -142,17 +142,21 @@ K562 set gives Pearson 0.9195.
   promoter backwards. The corrected tail is the minimal promoter in sense orientation
   followed by the spacer, and it is the library default (`LENTIMPRA_SUFFIX`).
 
-  | Checkpoints | Tail | How to score |
-  |---|---|---|
-  | `jax/mpra-<cell>-optimal` | **corrected** | library default; each one also records its construct in `config.json`, and the loader reads it back |
-  | `torch/mpra_<cell>` | **legacy** | pass `LENTIMPRA_SUFFIX_LEGACY` explicitly |
+  **Every lentiMPRA checkpoint published here now uses the corrected tail** — the JAX ones
+  retrained 2026-11-24, the PyTorch ones 2026-11-25. Each records its own construct
+  (`config.json` for JAX, the `construct` field for PyTorch) and the loaders read it back,
+  so you do not have to pass it by hand.
 
-  Getting this wrong is not a rounding error: scoring a legacy checkpoint with the
-  corrected tail costs ~0.02 Pearson (K562: 0.8793 → 0.8601), which is about what a
-  composition-matched *scramble* costs (0.8555) — the encoder keys on the exact tail it
-  was trained on. Retraining on the corrected tail recovers the same performance
-  (every cell type within 0.003), so the two are equivalent in quality; they are just
-  not mutually compatible. The PyTorch checkpoints are pending retraining.
+  Getting this wrong is not a rounding error: scoring a checkpoint with the tail it was
+  *not* trained on costs ~0.02 Pearson (K562: 0.8793 → 0.8601), about what a
+  composition-matched *scramble* costs (0.8555) — the encoder keys on the exact tail it saw
+  in training. Retraining recovers the same performance, within 0.003 for JAX and 0.006 for
+  PyTorch, so the two tails are equivalent in quality; they are simply not interchangeable.
+
+  The pre-correction weights are kept on the lab's shared storage as
+  `*_legacyconstruct`, and are deliberately **not** published here. Anything reproducing the
+  controls, the Enformer baselines or the hyperparameter sweep of the accompanying write-up
+  needs those, not these.
 - Plant test constructs use a random barcode per row, so Pearson reproduces to ~±0.0001;
   quote plant numbers to 3 decimals.
 
