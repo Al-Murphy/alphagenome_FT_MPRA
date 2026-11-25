@@ -223,6 +223,3 @@ out/*
 logs/
 logs/*
 .venv-jores/
-
-# Internal manuscript planning - deliberately not published
-docs/manuscript_update_scope.md

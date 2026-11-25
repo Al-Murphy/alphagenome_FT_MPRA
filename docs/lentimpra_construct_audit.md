@@ -25,7 +25,7 @@ RC("TCCATTATATACCCTCTAGTGTCGGTTCACGCAATG")
 So the input carried the right adapter **twice** — once forward at the end of
 `seq`, once reverse-complemented — then 21 of the ~35 nt of minimal promoter
 running backwards, then a fixed barcode that in reality is a random N15 sitting
-102 nt downstream of the element, outside the window entirely.
+87 nt downstream of the element, outside the window entirely.
 
 It survived review because the legacy string contains `TATATA`, which reads like
 a TATA box at a glance. It is the reverse complement of one.
@@ -262,6 +262,42 @@ Whichever is chosen, the legacy weights must be kept: they are what the
 released models, the controls, the Enformer baselines and the Table S4 sweep
 were all evaluated against.
 
+## Still open
+
+The manuscript text, the figures and the tables were updated on 2026-11-25, and the
+internal planning note that tracked that work has been removed. What it listed and is
+still outstanding:
+
+- **The K562 lentiMPRA attribution panel** (`results/plots/attribution_K562_gradient_x_input`)
+  has not been regenerated. It dates from Feb 2026, so it was produced with the legacy
+  weights *and* the legacy 51 bp tail — both the model and the sequence it attributes
+  over have since changed. Regenerate with
+  `scripts/compute_attributions.py --checkpoint_dir results/models/checkpoints/K562/mpra-K562-optimal/stage2`,
+  matching the element list the published panel used.
+- **`/grid/koo/home/shared/models/alphagenome_encoder/torch/README.md`** still documents
+  the legacy tail as if it were correct. The file is owned by another user and is not
+  group-writable, so its owner has to make the change. `jax/README.md` is updated.
+- **The PyTorch checkpoints are still on the legacy construct.** Retraining is under way
+  in `alphagenome-encoder-ft` (branch `lentimpra-match-jax`, fold splits, configs
+  mirroring the JAX ones); `torch/` on Hugging Face needs refreshing once they land. The
+  model card already states which framework uses which tail.
+- **Table S5 must not be regenerated from the new CAGI5 CSVs** — see the note below.
+
+### Table S5 inference speed: keep the published numbers
+
+Table S5 derives ms/variant from the `posshift20_n3_revcomp` CAGI5 summary CSVs, which
+were replaced when the retrains were scored. The new runs report **7.2-7.3 ms/variant
+against the published 9.5-10.0**, which would inflate the speed-up from 526x/552x to
+~700x.
+
+That difference is **node variation, not the model**. Retraining changes weight values,
+not architecture, parameter count or FLOPs, so inference cost is unchanged by
+construction; the new runs simply landed on a less contended GPU (26 min wall-clock
+versus ~4 min for the published run, i.e. the machine differed in both directions).
+Regenerating only the AlphaGenome rows would also compare AG timed on one node against
+Enformer and MPRALegNet timed on another, biasing the "~500x faster" claim in our own
+favour. If it is ever re-measured, re-time every row in one session on one node.
+
 ## Manuscript changes required
 
 Regardless of what the retrains show:
@@ -294,7 +330,7 @@ Replacing the last sentence of **Methods → "lentiMPRA (Agarwal et al. 2025)"**
 > the model. This downstream sequence was obtained by reverse-complementing the
 > reverse primers minP-enh-r and pLSmP-bc-primer-r of Supplementary Table S13 of
 > Agarwal et al. 2025, which are written on the strand opposite the reporter,
-> and joining them on their 15-nt overlap. The random 15-nt barcode lies 102 nt
+> and joining them on their 15-nt overlap. The random 15-nt barcode begins 87 nt
 > downstream of the element and therefore falls outside the 281-bp window.
 
 And a new sentence, in Methods or in the captions of Fig. S3a/S3b and Table S4:
