@@ -27,7 +27,10 @@ set +u; source /etc/profile.d/modules.sh 2>/dev/null || true; set -u
 # writing to the default directory would overwrite the published CSVs - the same
 # collision class that corrupted the benchmark tables in Sep 2026.
 #
-#   sbatch scripts/slurm/cagi5_fixedconstruct_mpra.sh
+#   sbatch scripts/slurm/cagi5_mpra.sh
+#
+# RUN_TEMPLATE overrides the checkpoint directory name; {CELL} is substituted:
+#   sbatch --export=ALL,RUN_TEMPLATE=mpra-{CELL}-optimal-legacy scripts/slurm/cagi5_mpra.sh
 
 REPO=/grid/koo/home/amurphy/projects/alphagenome_FT_MPRA
 cd "$REPO"
@@ -36,11 +39,13 @@ export CURL_CA_BUNDLE=/etc/pki/tls/certs/ca-bundle.crt
 export SSL_CERT_FILE=/etc/pki/tls/certs/ca-bundle.crt
 
 BASE=$(ls -d /grid/koo/home/amurphy/.cache/huggingface/hub/models--google--alphagenome-all-folds/snapshots/*/ | head -1)
-OUTDIR="$REPO/results/cagi5_evaluations/fixedconstruct"
+OUTDIR="${OUTDIR:-$REPO/results/cagi5_evaluations}"
 mkdir -p logs "$OUTDIR"
 
 for CELL in HepG2 K562; do
-  CK="$REPO/results/models/checkpoints/${CELL}/mpra-${CELL}-optimal-fixedconstruct"
+  RUN="${RUN_TEMPLATE:-mpra-{CELL}-optimal}"
+  RUN="${RUN//\{CELL\}/$CELL}"
+  CK="$REPO/results/models/checkpoints/${CELL}/${RUN}"
   for STAGE in stage1 stage2; do
     [ -d "$CK/$STAGE" ] || { echo "SKIP ${CELL}/${STAGE} (not present)"; continue; }
     for AUG in plain aug; do

@@ -22,7 +22,11 @@ set +u; source /etc/profile.d/modules.sh 2>/dev/null || true; set -u
 # construct, so this also verifies that test_ft_model_mpra.py reads it back from
 # the checkpoint rather than falling back to the legacy tail.
 #
-#   sbatch --export=ALL,CELL_TYPE=HepG2 scripts/slurm/test_fixedconstruct_mpra.sh
+#   sbatch --export=ALL,CELL_TYPE=HepG2 scripts/slurm/test_mpra.sh
+#
+# RUN overrides the checkpoint directory name, e.g. to score a run that was
+# written under a different name:
+#   sbatch --export=ALL,CELL_TYPE=K562,RUN=mpra-K562-optimal-legacy scripts/slurm/test_mpra.sh
 
 REPO=/grid/koo/home/amurphy/projects/alphagenome_FT_MPRA
 cd "$REPO"
@@ -31,12 +35,13 @@ export CURL_CA_BUNDLE=/etc/pki/tls/certs/ca-bundle.crt
 export SSL_CERT_FILE=/etc/pki/tls/certs/ca-bundle.crt
 
 CELL_TYPE="${CELL_TYPE:?set CELL_TYPE=HepG2|K562|WTC11}"
-RUN="mpra-${CELL_TYPE}-optimal-fixedconstruct"
+RUN="${RUN:-mpra-${CELL_TYPE}-optimal}"
 CKROOT="$REPO/results/models/checkpoints/${CELL_TYPE}/${RUN}"
 BASE=$(ls -d /grid/koo/home/amurphy/.cache/huggingface/hub/models--google--alphagenome-all-folds/snapshots/*/ | head -1)
-# Deliberately NOT results/test_predictions/ — that directory already holds stale
-# root files from the random-init collision; keep these separate.
-OUTDIR="$REPO/results/test_predictions/fixedconstruct/${CELL_TYPE}"
+# Per-cell subdirectory, never the root of results/test_predictions/ — that root
+# still holds stale files from the random-init output collision, and
+# create_mpra_comparison_table.py checks the per-cell subdirectory first.
+OUTDIR="${OUTDIR:-$REPO/results/test_predictions/${CELL_TYPE}}"
 
 mkdir -p logs "$OUTDIR"
 echo "cell type : $CELL_TYPE"

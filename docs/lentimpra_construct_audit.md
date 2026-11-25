@@ -116,13 +116,21 @@ models are expected to land at the published numbers to ~3 decimals.
 
 Retrained on the corrected construct (jobs 4065831–3, kooq/koolab):
 
-- `mpra-{HepG2,K562,WTC11}-optimal-fixedconstruct` — configs
-  `configs/mpra_{cell}_fixedconstruct.json`, hyperparameters identical to the
-  originals, only the construct and run name differ.
+- `mpra-{HepG2,K562,WTC11}-optimal` — `configs/mpra_{cell}.json`, which now carry
+  `"construct_suffix": null` (the corrected tail). Hyperparameters are unchanged
+  from the published runs; set `"construct_suffix": "legacy"` to reproduce those.
+
+  The retrains were launched from temporary `*_fixedconstruct` copies of the
+  configs and job scripts, since folded back into the canonical files. So on disk
+  the corrected checkpoints currently sit under
+  `results/models/checkpoints/<cell>/mpra-<cell>-optimal-fixedconstruct/`, while
+  `mpra-<cell>-optimal/` still holds the released legacy weights. The scoring
+  scripts default to the canonical name and take `RUN=` / `RUN_TEMPLATE=` to
+  point at either — see the open item at the end about swapping them.
 
 ### Retrain results (full-split test Pearson)
 
-Scored with `scripts/slurm/test_fixedconstruct_mpra.sh`, which passes no
+Scored with `scripts/slurm/test_mpra.sh`, which passes no
 `--construct_suffix`, so the construct is read back from the checkpoint — this
 also validates the pinning round trip. Do **not** compare against the
 `test_pearson` printed per epoch during training: that is batch-averaged and
@@ -182,6 +190,77 @@ runs (~60 GPU-h) do not need rerunning.** Enformer *is* affected by the same bug
 evaluated on that tail throughout, so its published numbers are internally
 consistent. MPRALegNet is not affected at all: it reads the bare 230 bp `seq`
 column and never builds the construct.
+
+### CAGI5 re-scored against the retrained checkpoints
+
+CAGI5 is affected only *through the weights* — the CAGI5 scripts score a 281 bp
+**genomic** window around each variant and never build the reporter construct —
+so this is pure inference (`scripts/slurm/cagi5_mpra.sh`, job 4075333). Only
+HepG2 and K562 have CAGI5 elements (HepG2: F9, LDLR, SORT1; K562: GP1BB, HBB,
+HBG1, PKLR); there is no WTC11 set. Both the plain and the test-time-augmented
+(`posshift20_n3` + revcomp) arms were re-run, 8 runs in all.
+
+Pooled across all SNPs:
+
+| run | legacy r | corrected r | Δr | legacy ρ | corrected ρ | Δρ |
+|---|---|---|---|---|---|---|
+| probing HepG2 | 0.6776 | 0.6845 | +0.0069 | 0.5711 | 0.5504 | −0.0207 |
+| probing K562 | 0.6905 | 0.6925 | +0.0020 | 0.5319 | 0.5392 | +0.0072 |
+| fine-tuned HepG2 | 0.6850 | 0.6855 | +0.0005 | 0.5638 | 0.5529 | −0.0109 |
+| fine-tuned K562 | 0.6316 | 0.6486 | +0.0170 | 0.4715 | 0.4903 | +0.0187 |
+| probing HepG2, aug | 0.6825 | 0.6788 | −0.0037 | 0.5848 | 0.5626 | −0.0222 |
+| probing K562, aug | 0.6963 | 0.7086 | +0.0123 | 0.5380 | 0.5588 | +0.0208 |
+| fine-tuned HepG2, aug | 0.6900 | 0.6887 | −0.0012 | 0.5827 | 0.5663 | −0.0164 |
+| fine-tuned K562, aug | 0.6573 | 0.6651 | +0.0078 | 0.5021 | 0.5121 | +0.0101 |
+
+Movement here is larger than on the in-domain lentiMPRA test split (up to
+±0.02 rather than ±0.002), which is expected: this is zero-shot transfer to a
+different assay on 3-4 elements, so each number rests on far less data. There is
+no systematic degradation. The pattern is cell-type-split rather than
+construct-driven — **K562 improves on every one of its eight statistics, HepG2's
+Spearman falls in all four of its arms** while its Pearson barely moves. Nothing
+here is outside what element-level resampling on this few elements would produce,
+and the conclusions the paper draws from CAGI5 are unchanged.
+
+One caveat on the augmented rows: the new runs were given `--random_seed 0`
+whereas the published ones were unseeded, so part of each augmented Δ is
+shift-sampling noise rather than a weight difference.
+
+### Where the result files live
+
+`results/` is gitignored, so these are not under version control. The corrected
+numbers have been promoted to the canonical paths that the table and figure
+scripts read:
+
+- `results/test_predictions/<cell>/` — corrected; legacy copies kept in
+  `results/test_predictions/legacy_construct/<cell>/`.
+- `results/cagi5_evaluations/` — corrected for the `finetuned`/`probing` rows;
+  the 24 legacy AlphaGenome CSVs kept in
+  `results/cagi5_evaluations/legacy_construct/`. The `base`, `enformer_mpra` and
+  `mpralegnet` files were not touched — those models stay on the legacy
+  construct by design.
+
+So `create_mpra_comparison_table.py` and `plot_cagi5_results.py` now pick up the
+corrected AlphaGenome numbers with no flag changes. To go back, swap the two
+directories again; nothing was deleted.
+
+### Open item: swap the on-disk checkpoint directories
+
+The corrected checkpoints are still parked under
+`results/models/checkpoints/<cell>/mpra-<cell>-optimal-fixedconstruct/` and the
+released legacy weights still occupy `mpra-<cell>-optimal/`. Checkpoints are not
+in git (`results/` is gitignored), so a rename here has no undo through version
+control — hence it has not been done automatically. Before the Hugging Face
+re-upload, decide one of:
+
+- rename `mpra-<cell>-optimal` to `mpra-<cell>-optimal-legacyconstruct` and
+  promote the corrected one into the canonical name (what the scripts now expect
+  by default), or
+- keep both names and always pass `RUN=` / `RUN_TEMPLATE=` explicitly.
+
+Whichever is chosen, the legacy weights must be kept: they are what the
+released models, the controls, the Enformer baselines and the Table S4 sweep
+were all evaluated against.
 
 ## Manuscript changes required
 

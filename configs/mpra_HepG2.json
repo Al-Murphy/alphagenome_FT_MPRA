@@ -1,5 +1,5 @@
 {
-  "_comment": "Optimal hyperparameters for LentiMPRA HepG2 cell line. Fill in values after benchmarking.",
+  "_comment": "Optimal hyperparameters for LentiMPRA HepG2 cell line. construct_suffix null = the corrected reporter-strand tail (LENTIMPRA_SUFFIX): minimal promoter in sense orientation, then the spacer. Set it to 'legacy' to reproduce the pre-2026-11 runs, which appended the Table S13 reverse primer minP-enh-r without reverse-complementing it.",
   "_source": "Generated from benchmark results",
   
   "cell_type": "HepG2",
@@ -9,7 +9,8 @@
     "random_shift": true,
     "random_shift_likelihood": 0.5,
     "reverse_complement": true,
-    "pad_n_bases": 0
+    "pad_n_bases": 0,
+    "construct_suffix": null
   },
   
   "model": {
