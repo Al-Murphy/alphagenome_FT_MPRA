@@ -268,19 +268,29 @@ The manuscript text, the figures and the tables were updated on 2026-11-25, and 
 internal planning note that tracked that work has been removed. What it listed and is
 still outstanding:
 
-- **The K562 lentiMPRA attribution panel** (`results/plots/attribution_K562_gradient_x_input`)
-  has not been regenerated. It dates from Feb 2026, so it was produced with the legacy
-  weights *and* the legacy 51 bp tail — both the model and the sequence it attributes
-  over have since changed. Regenerate with
-  `scripts/compute_attributions.py --checkpoint_dir results/models/checkpoints/K562/mpra-K562-optimal/stage2`,
-  matching the element list the published panel used.
 - **`/grid/koo/home/shared/models/alphagenome_encoder/torch/README.md`** still documents
   the legacy tail as if it were correct. The file is owned by another user and is not
   group-writable, so its owner has to make the change. `jax/README.md` is updated.
-- **The PyTorch checkpoints are still on the legacy construct.** Retraining is under way
-  in `alphagenome-encoder-ft` (branch `lentimpra-match-jax`, fold splits, configs
-  mirroring the JAX ones); `torch/` on Hugging Face needs refreshing once they land. The
-  model card already states which framework uses which tail.
+- **The PyTorch checkpoints are still on the legacy construct**, in both places they are
+  published. Retraining is under way in `alphagenome-encoder-ft` (branch
+  `lentimpra-match-jax`, fold splits, configs mirroring the JAX ones). Once they land,
+  update **both**:
+  - `/grid/koo/home/shared/models/alphagenome_encoder/torch/mpra_{HepG2,K562,WTC11}/`
+    (`frozen_encoder.pt` + `finetuned_encoder.pt` in each). Preserve the current ones as
+    `mpra_<cell>_legacyconstruct`, as was done on the JAX side. Note these directories
+    are owned by `duran`, not by us — the parent `torch/` directory is group-writable, so
+    they can be renamed and replaced, but the originals are someone else's files.
+  - Hugging Face `Al-Murphy/alphagenome-encoder-ft`, `torch/mpra_<cell>`, by re-running
+    `scripts/upload_weights_to_hf.py` after the shared folder is updated. Add the
+    `*_legacyconstruct` directories to its `EXCLUDE` set, as the JAX ones are.
+
+  The model card already states which framework uses which tail; update it once they
+  match.
+
+  The JAX half of this is done: shared `jax/mpra-<cell>-optimal` and the Hugging Face
+  `jax/` models carry the corrected construct, with the pre-correction weights kept
+  beside them as `jax/mpra-<cell>-optimal-legacyconstruct` (shared folder only, not
+  published).
 - **Table S5 must not be regenerated from the new CAGI5 CSVs** — see the note below.
 
 ### Table S5 inference speed: keep the published numbers
