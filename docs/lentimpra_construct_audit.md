@@ -120,6 +120,42 @@ Retrained on the corrected construct (jobs 4065831–3, kooq/koolab):
   `configs/mpra_{cell}_fixedconstruct.json`, hyperparameters identical to the
   originals, only the construct and run name differ.
 
+### Retrain results (full-split test Pearson)
+
+Scored with `scripts/slurm/test_fixedconstruct_mpra.sh`, which passes no
+`--construct_suffix`, so the construct is read back from the checkpoint — this
+also validates the pinning round trip. Do **not** compare against the
+`test_pearson` printed per epoch during training: that is batch-averaged and
+attenuated.
+
+| cell | stage | legacy (published) | corrected | Δ |
+|---|---|---|---|---|
+| HepG2 | probing | 0.8643 | 0.8643 | 0.0000 |
+| HepG2 | fine-tuned | 0.8874 | 0.8885 | +0.0011 |
+| K562 | probing | 0.8532 | 0.8555 | +0.0023 |
+| K562 | fine-tuned | 0.8793 | 0.8801 | +0.0008 |
+| WTC11 | probing | 0.8294 | 0.8299 | +0.0005 |
+| WTC11 | fine-tuned | 0.8394 | 0.8403 | +0.0009 |
+
+**All three cell types are at parity.** Every Δ is positive and ≤ +0.0023,
+matching the direction of the PyTorch A/B. The largest is K562 probing (+0.0023);
+the three fine-tuned arms — the numbers the paper reports — move by +0.0011,
++0.0008 and +0.0009. All are an order of magnitude below the ~0.02 train/test
+mismatch penalty and inside the per-split SE of r (≈0.0033 K562, ≈0.0050 HepG2,
+≈0.0091 WTC11), so none is distinguishable from noise. Probing barely moves,
+which is what the mechanism predicts: with the encoder frozen, the constant tail
+contributes a fixed offset that the head's bias absorbs, so only the fine-tuned
+arm has much room to move.
+
+K562 is worth one note: the published run hit the 48 h wall at stage-2 epoch
+46/50, whereas this one early-stopped at epoch 41 (best epoch 35-37) on kooq
+without a wall. So the retrain is the better-trained of the two and still lands
+within 0.001 — the construct is not doing anything either way.
+
+This also confirms that the ~0.02 drop measured earlier was purely a train/test
+mismatch, not a deficiency of the corrected construct: trained on it, the model
+scores the same as before.
+
 **Deliberately not retrained** (decision 2026-11-23): the fold-0 leakage control
 (Fig. S3b), the random-init control (Fig. S3a), the Enformer lentiMPRA
 baselines, and the 63-run hyperparameter sweep (Table S4, whose embedding caches
@@ -127,18 +163,25 @@ are also baked with the legacy construct). Each of these was trained *and*
 evaluated on the legacy construct, so each is internally consistent and its
 published numbers stand. The Methods must state this.
 
-This rests on the retrained models landing at parity with the published numbers.
-**If the retrains do not reproduce ≈0.887 / 0.879 / 0.839, revisit** — a real
-shift would mean the controls no longer sit on the same scale as the main
-models, and they would have to be rerun too.
+This rested on the retrained models landing at parity with the published
+numbers. **Resolved 2026-11-24: they do.** 0.8885 / 0.8801 / 0.8403 against the
+published 0.8874 / 0.8793 / 0.8394. The controls, the Enformer baselines and the
+Table S4 sweep therefore still sit on the same scale as the main models, and the
+decision not to rerun them stands.
 
-### Open point: the Enformer baseline
+### Open point: the Enformer baseline — resolved
 
 Fig. 4a and Fig. 4d compare the AlphaGenome encoder against an Enformer encoder
-run through the *same* recipe. If the AG numbers move to the corrected construct
-and Enformer stays on legacy, that comparison is no longer input-matched. At
-parity the numerical effect is negligible and a caption note covers it; if the
-retrains shift, the three Enformer runs (~60 GPU-h) should follow.
+run through the *same* recipe. If the AG numbers had moved to the corrected
+construct while Enformer stayed on legacy, that comparison would no longer be
+input-matched. **Since the AG retrains came in at parity (≤0.0023), the effect is
+numerically negligible and a Methods/caption note covers it — the three Enformer
+runs (~60 GPU-h) do not need rerunning.** Enformer *is* affected by the same bug
+(`enf_utils.py:216-217` hardcodes the identical legacy tail, with no
+`construct_suffix` parameter and no config path), but it was trained and
+evaluated on that tail throughout, so its published numbers are internally
+consistent. MPRALegNet is not affected at all: it reads the bare 230 bp `seq`
+column and never builds the construct.
 
 ## Manuscript changes required
 
@@ -184,6 +227,10 @@ And a new sentence, in Methods or in the captions of Fig. S3a/S3b and Table S4:
 > primer was used without reverse-complementing it. Each of those analyses was
 > trained and evaluated with the same construct throughout and is therefore
 > internally consistent; retraining on the corrected construct changes held-out
-> performance by less than **[FILL: measured Δ from jobs 4065831–3]**.
+> performance by less than 0.003 in Pearson r (largest observed difference across
+> the three cell lines, in both the probing and the fine-tuned setting).
 
-The bracketed number must come from the retrains before this sentence is used.
+That bracket is now filled from the retrain table above: all three cell types are
+scored, the largest |Δ| anywhere in the table is +0.0023 (K562 probing), and the
+three fine-tuned arms differ by at most +0.0011. "Less than 0.003" is the honest
+bound; if you prefer to quote only the fine-tuned arms it is "less than 0.002".

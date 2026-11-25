@@ -57,6 +57,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import time
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -428,6 +429,23 @@ def batch_predict_mpra(
     return np.concatenate(all_preds, axis=0)
 
 
+def _drop_broken_torch() -> None:
+    """Hide a half-installed ``torch`` from scipy's array-API dispatch.
+
+    This JAX virtualenv has an orphaned ``site-packages/torch/`` left behind by
+    a partial uninstall: no ``__init__.py``, so ``import torch`` quietly
+    succeeds as a *namespace package* with no ``Tensor`` attribute. scipy
+    >=1.16 dispatches through ``is_torch_array``, which does
+    ``getattr(sys.modules["torch"], "Tensor")`` and dies with
+    ``AttributeError: module 'torch' has no attribute 'Tensor'`` inside
+    ``pearsonr``. Several modules here import torch lazily, so the poisoning can
+    happen at any point; drop it immediately before the scipy call.
+    """
+    mod = sys.modules.get("torch")
+    if mod is not None and not hasattr(mod, "Tensor"):
+        del sys.modules["torch"]
+
+
 def compute_correlations(
     preds: np.ndarray,
     targets: np.ndarray,
@@ -435,6 +453,7 @@ def compute_correlations(
     """Compute Pearson r and Spearman ρ for two 1D arrays."""
     if len(preds) == 0:
         return float("nan"), float("nan")
+    _drop_broken_torch()
     pearson, _ = pearsonr(preds, targets)
     spearman, _ = spearmanr(preds, targets)
     return float(pearson), float(spearman)
@@ -625,6 +644,18 @@ def main() -> None:
         "--use_reverse_complement",
         action='store_true',
         help="Enable reverse complement augmentation: always average predictions over forward and reverse complement sequences.",
+    )
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default=None,
+        help=(
+            "Directory for the result CSVs (default: ./results/cagi5_evaluations). "
+            "Output filenames key on the checkpoint DIRECTORY NAME, which is just "
+            "'stage1'/'stage2' for every run, so two different models evaluated "
+            "with the same augmentation settings collide. Always pass a run-specific "
+            "directory when scoring a checkpoint other than the published ones."
+        ),
     )
 
     args = parser.parse_args()
@@ -915,7 +946,11 @@ def main() -> None:
     print("=" * 80)
     
     # Save results to CSV
-    results_dir = repo_root / "results" / "cagi5_evaluations"
+    results_dir = (
+        Path(args.output_dir).resolve()
+        if args.output_dir
+        else repo_root / "results" / "cagi5_evaluations"
+    )
     results_dir.mkdir(parents=True, exist_ok=True)
     
     # Extract checkpoint name for filename
