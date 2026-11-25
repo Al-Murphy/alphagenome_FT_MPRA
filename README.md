@@ -195,13 +195,20 @@ You can also use the pretrained model as an oracle. Currently, `MPRAOracle` is o
 ```python
 from alphagenome_ft_mpra import load_oracle
 
+from alphagenome_ft_mpra.oracle import (
+    DEFAULT_PROMOTER,   # corrected reporter-strand tail: minP (sense) + spacer
+    LEGACY_PROMOTER,    # pre-correction tail, for older checkpoints
+)
+
 oracle = load_oracle(
     "/path/to/checkpoint_dir",
-    # Optional construct pieces (set to None to skip)
+    # Optional construct pieces (set to None to skip). The defaults are the
+    # corrected lentiMPRA construct; pass LEGACY_PROMOTER for a checkpoint
+    # trained before the orientation was fixed.
     left_adapter=None,
     right_adapter=None,
-    promoter="TCCATTATATACCCTCTAGTGTCGGTTCACGCAATG",
-    barcode="AGAGACTGAGGCCAC",
+    promoter=DEFAULT_PROMOTER,
+    barcode="",
 )
 
 # mode="core": add left/right adapters + promoter + barcode (if provided)

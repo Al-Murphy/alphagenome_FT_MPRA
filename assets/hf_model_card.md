@@ -74,9 +74,9 @@ for the manual path and the gotchas.
 
 | Checkpoint | Task | frozen | fine-tuned |
 |---|---|---|---|
-| `mpra_K562` | lentiMPRA K562 | 0.8580 | **0.8785** |
-| `mpra_HepG2` | lentiMPRA HepG2 | 0.8688 | **0.8876** |
-| `mpra_WTC11` | lentiMPRA WTC11 | 0.8278 | **0.8344** |
+| `mpra_K562` | lentiMPRA K562 | 0.8528 | **0.8806** |
+| `mpra_HepG2` | lentiMPRA HepG2 | 0.8681 | **0.8880** |
+| `mpra_WTC11` | lentiMPRA WTC11 | 0.8324 | **0.8411** |
 | `starrseq_drosophila` | DeepSTARR (dev + hk) | 0.6184 | **0.7468** |
 | `jores_multicondition` | Jores 2026 plant MPRA (5 cond.) | — | **0.841** |
 
@@ -100,8 +100,17 @@ inference.
 | proto | enhancer | 0.6870 | **0.8036** |
 | proto | promoter_only | 0.7015 | **0.7683** |
 
-Plus `jax/{mpra-K562,mpra-HepG2,mpra-WTC11,deepstarr}-optimal` (see the paper for
-their metrics).
+### `jax/` — Agarwal et al. lentiMPRA (`mpra-<cell>-optimal`), test Pearson r
+
+These carry the **corrected** reporter construct (see Notes). Retrained 2026-11-24.
+
+| Checkpoint | Task | probe (stage1) | fine-tuned (stage2) |
+|---|---|---|---|
+| `mpra-HepG2-optimal` | lentiMPRA HepG2 | 0.8643 | **0.8885** |
+| `mpra-K562-optimal` | lentiMPRA K562 | 0.8555 | **0.8801** |
+| `mpra-WTC11-optimal` | lentiMPRA WTC11 | 0.8299 | **0.8403** |
+
+Plus `jax/deepstarr-optimal` (see the paper for its metrics).
 
 ### `jax/` — Gosai et al. lentiMPRA (`Gosai-<cell>-optimal`)
 
@@ -123,8 +132,31 @@ K562 set gives Pearson 0.9195.
 - **Plant head width varies per cell** (4096 / 2048 / 1024). It's recorded in each
   checkpoint's `config.json`; don't assume a default.
 - **Inputs are reporter constructs**, not bare genomic sequence — each checkpoint expects
-  the construct it was trained on (promoter+barcode, library adapters, or 35S
-  enhancer + core promoter + 5′ UTR + barcode). See the repo docs.
+  the construct it was trained on (the 230 bp element plus a 51 bp constant tail for
+  lentiMPRA, library adapters for DeepSTARR, or 35S enhancer + core promoter + 5′ UTR +
+  barcode for plant). See the repo docs.
+- **lentiMPRA: two tails exist, they are not interchangeable, and the JAX and PyTorch
+  checkpoints currently use different ones.** The original tail was taken from the
+  Agarwal et al. 2025 Table S13 reverse primer `minP-enh-r` copied without
+  reverse-complementing it, so it repeats the right adapter and runs the minimal
+  promoter backwards. The corrected tail is the minimal promoter in sense orientation
+  followed by the spacer, and it is the library default (`LENTIMPRA_SUFFIX`).
+
+  **Every lentiMPRA checkpoint published here now uses the corrected tail** — the JAX ones
+  retrained 2026-11-24, the PyTorch ones 2026-11-25. Each records its own construct
+  (`config.json` for JAX, the `construct` field for PyTorch) and the loaders read it back,
+  so you do not have to pass it by hand.
+
+  Getting this wrong is not a rounding error: scoring a checkpoint with the tail it was
+  *not* trained on costs ~0.02 Pearson (K562: 0.8793 → 0.8601), about what a
+  composition-matched *scramble* costs (0.8555) — the encoder keys on the exact tail it saw
+  in training. Retraining recovers the same performance, within 0.003 for JAX and 0.006 for
+  PyTorch, so the two tails are equivalent in quality; they are simply not interchangeable.
+
+  The pre-correction weights are kept on the lab's shared storage as
+  `*_legacyconstruct`, and are deliberately **not** published here. Anything reproducing the
+  controls, the Enformer baselines or the hyperparameter sweep of the accompanying write-up
+  needs those, not these.
 - Plant test constructs use a random barcode per row, so Pearson reproduces to ~±0.0001;
   quote plant numbers to 3 decimals.
 

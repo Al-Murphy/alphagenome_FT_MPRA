@@ -63,6 +63,7 @@ from alphagenome_ft import (
     load_checkpoint,
 )
 from alphagenome_ft_mpra import EncoderMPRAHead, LentiMPRADataset, MPRADataLoader
+from alphagenome_ft_mpra.data import LENTIMPRA_SUFFIX, LENTIMPRA_SUFFIX_LEGACY
 
 _PREDICT_REQUESTED_OUTPUTS: tuple = tuple(dna_output.OutputType)
 
@@ -345,6 +346,23 @@ def main():
         help='Local cached Borzoi fold BED defining AG fold TEST intervals.'
     )
     parser.add_argument(
+        '--construct_suffix',
+        type=str,
+        default=None,
+        help="Override the constant sequence appended after the 230 bp assayed "
+             "element (normally promoter_seq + rand_barcode). Used to measure how "
+             "sensitive a trained model is to the reporter sequence it was trained "
+             "with. Defaults to the LentiMPRADataset defaults, i.e. unchanged "
+             "behaviour. When set, the run is tagged in the output filenames so it "
+             "cannot overwrite the canonical *_test_metrics.csv artifacts."
+    )
+    parser.add_argument(
+        '--suffix_tag',
+        type=str,
+        default=None,
+        help='Short label for a --construct_suffix run, used in output filenames.'
+    )
+    parser.add_argument(
         '--split',
         type=str,
         default='test',
@@ -433,6 +451,39 @@ def main():
     # ag_test_filter_version only ever applies to the test split (LentiMPRADataset
     # ignores it otherwise), so it is safe to pass through unchanged.
     print(f"\nLoading {args.split} dataset (cell_type={args.cell_type})...")
+    # Resolve the reporter construct. Priority: explicit CLI override, then the
+    # value pinned into the checkpoint at training time, then the pre-correction
+    # suffix for checkpoints that predate pinning. Scoring a checkpoint under a
+    # tail other than its own costs ~0.02 Pearson, so the fallback must be the
+    # legacy suffix (what those checkpoints were trained on), never the
+    # corrected default.
+    # Only an explicit CLI override tags the output files; the resolved default
+    # must keep writing the canonical *_test_metrics.csv that
+    # create_mpra_comparison_table.py globs.
+    construct_was_overridden = args.construct_suffix is not None
+    if args.construct_suffix is None:
+        ckpt_suffix = head_metadata.get('construct_suffix')
+        if ckpt_suffix:
+            args.construct_suffix = ckpt_suffix
+            print(f"Construct read from checkpoint ({len(ckpt_suffix)} bp): {ckpt_suffix}")
+        else:
+            args.construct_suffix = LENTIMPRA_SUFFIX_LEGACY
+            print("WARNING: this checkpoint does not record its reporter construct, "
+                  "so it predates the orientation correction. Scoring it with the "
+                  "legacy (pre-correction) suffix, which is what it was trained on. "
+                  "Pass --construct_suffix explicitly to override.")
+
+    construct_kwargs = {}
+    if args.construct_suffix is not None:
+        # The dataset concatenates seq + promoter_seq + rand_barcode, so the whole
+        # constant tail is carried by promoter_seq and rand_barcode is emptied.
+        construct_kwargs = {
+            'promoter_seq': args.construct_suffix,
+            'rand_barcode': '',
+        }
+        print(f"Construct suffix OVERRIDDEN ({len(args.construct_suffix)} bp): "
+              f"{args.construct_suffix}")
+
     test_dataset = LentiMPRADataset(
         model=model,
         cell_type=args.cell_type,
@@ -442,6 +493,7 @@ def main():
         ag_test_filter_version=args.ag_test_filter_version,
         coords_path=args.coords_path,
         fold_intervals_path=args.fold_intervals_path,
+        **construct_kwargs,
     )
     print(f"✓ {args.split} dataset loaded: {len(test_dataset)} samples")
     
@@ -480,6 +532,11 @@ def main():
     # (create_mpra_comparison_table.py globs *_test_metrics.csv).
     checkpoint_name = Path(args.checkpoint_dir).name
     split_tag = 'test' if args.split == 'test' else args.split
+    # A construct override must never land on the canonical artifact names that
+    # create_mpra_comparison_table.py globs.
+    if construct_was_overridden:
+        tag = args.suffix_tag or 'altconstruct'
+        split_tag = f"{split_tag}_{tag}"
     predictions_file = output_dir / f"{checkpoint_name}_{args.cell_type}_{split_tag}_predictions.csv"
     metrics_file = output_dir / f"{checkpoint_name}_{args.cell_type}_{split_tag}_metrics.csv"
     
@@ -498,6 +555,12 @@ def main():
     
     # Save metrics as separate CSV
     print(f"Saving metrics to {metrics_file}...")
+    metrics = dict(metrics)
+    metrics['construct_suffix'] = (
+        args.construct_suffix
+        if args.construct_suffix is not None
+        else test_dataset.promoter_seq + test_dataset.rand_barcode
+    )
     df_metrics = pd.DataFrame([metrics])
     df_metrics.to_csv(metrics_file, index=False)
     print(f"✓ Metrics saved to {metrics_file}")

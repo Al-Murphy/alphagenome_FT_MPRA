@@ -21,10 +21,24 @@ from alphagenome_ft import (
 
 from .mpra_heads import EncoderMPRAHead
 
+from .data import LENTIMPRA_SUFFIX, LENTIMPRA_SUFFIX_LEGACY
+
 DEFAULT_LEFT_ADAPTER = "AGGACCGGATCAACT"
 DEFAULT_RIGHT_ADAPTER= "CATTGCGTGAACCGA"
-DEFAULT_PROMOTER = "TCCATTATATACCCTCTAGTGTCGGTTCACGCAATG"
-DEFAULT_BARCODE = "AGAGACTGAGGCCAC"
+
+# Everything the library adds after the right adapter, read on the reporter
+# strand: the minimal promoter in sense orientation, then the spacer. It is
+# supplied through the `promoter` slot with an empty `barcode`, because the real
+# barcode is random per molecule and sits 102 nt downstream, outside the 281 bp
+# window. See docs/lentimpra_construct_audit.md.
+DEFAULT_PROMOTER = LENTIMPRA_SUFFIX
+DEFAULT_BARCODE = ""
+
+# The pre-correction construct, for scoring checkpoints trained before the
+# orientation was fixed. Scoring such a checkpoint with the corrected tail
+# instead costs ~0.02 Pearson, so this is not interchangeable with the default.
+LEGACY_PROMOTER = LENTIMPRA_SUFFIX_LEGACY
+LEGACY_BARCODE = ""
 
 _PREDICT_REQUESTED_OUTPUTS: tuple = tuple(dna_output.OutputType)
 
