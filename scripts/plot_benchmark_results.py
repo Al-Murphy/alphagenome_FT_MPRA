@@ -63,14 +63,18 @@ def load_lentimpra_data(csv_path=None):
         {'model': 'Enf. MPRA', 'regime': 'Fine-tuned', 'cell_type': 'HepG2', 'pearson_r': 0.83},
         {'model': 'Enf. MPRA', 'regime': 'Fine-tuned', 'cell_type': 'K562', 'pearson_r': 0.835},
         {'model': 'Enf. MPRA', 'regime': 'Fine-tuned', 'cell_type': 'WTC11', 'pearson_r': 0.804},
-        # AlphaGenome Probing
+        # AlphaGenome Probing -- CORRECTED CONSTRUCT (retrained 2026-11-24).
+        # Source: results/test_predictions/<cell>/stage1_<cell>_test_metrics.csv.
+        # Pre-correction values were 0.864 / 0.853 / 0.829.
         {'model': 'AG MPRA', 'regime': 'Probing', 'cell_type': 'HepG2', 'pearson_r': 0.864},
-        {'model': 'AG MPRA', 'regime': 'Probing', 'cell_type': 'K562', 'pearson_r': 0.853},
-        {'model': 'AG MPRA', 'regime': 'Probing', 'cell_type': 'WTC11', 'pearson_r': 0.829},
-        # AlphaGenome Fine-tuned
-        {'model': 'AG MPRA', 'regime': 'Fine-tuned', 'cell_type': 'HepG2', 'pearson_r': 0.887},
-        {'model': 'AG MPRA', 'regime': 'Fine-tuned', 'cell_type': 'K562', 'pearson_r': 0.879},
-        {'model': 'AG MPRA', 'regime': 'Fine-tuned', 'cell_type': 'WTC11', 'pearson_r': 0.839},
+        {'model': 'AG MPRA', 'regime': 'Probing', 'cell_type': 'K562', 'pearson_r': 0.855},
+        {'model': 'AG MPRA', 'regime': 'Probing', 'cell_type': 'WTC11', 'pearson_r': 0.830},
+        # AlphaGenome Fine-tuned -- CORRECTED CONSTRUCT (retrained 2026-11-24).
+        # Source: results/test_predictions/<cell>/stage2_<cell>_test_metrics.csv.
+        # Pre-correction values were 0.887 / 0.879 / 0.839.
+        {'model': 'AG MPRA', 'regime': 'Fine-tuned', 'cell_type': 'HepG2', 'pearson_r': 0.889},
+        {'model': 'AG MPRA', 'regime': 'Fine-tuned', 'cell_type': 'K562', 'pearson_r': 0.880},
+        {'model': 'AG MPRA', 'regime': 'Fine-tuned', 'cell_type': 'WTC11', 'pearson_r': 0.840},
         # AlphaGenome random initialisation - RETUNED (2026-09).
         #
         # The original 2026-05 control inherited hyperparameters chosen for the

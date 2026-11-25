@@ -100,8 +100,17 @@ inference.
 | proto | enhancer | 0.6870 | **0.8036** |
 | proto | promoter_only | 0.7015 | **0.7683** |
 
-Plus `jax/{mpra-K562,mpra-HepG2,mpra-WTC11,deepstarr}-optimal` (see the paper for
-their metrics).
+### `jax/` — Agarwal et al. lentiMPRA (`mpra-<cell>-optimal`), test Pearson r
+
+These carry the **corrected** reporter construct (see Notes). Retrained 2026-11-24.
+
+| Checkpoint | Task | probe (stage1) | fine-tuned (stage2) |
+|---|---|---|---|
+| `mpra-HepG2-optimal` | lentiMPRA HepG2 | 0.8643 | **0.8885** |
+| `mpra-K562-optimal` | lentiMPRA K562 | 0.8555 | **0.8801** |
+| `mpra-WTC11-optimal` | lentiMPRA WTC11 | 0.8299 | **0.8403** |
+
+Plus `jax/deepstarr-optimal` (see the paper for its metrics).
 
 ### `jax/` — Gosai et al. lentiMPRA (`Gosai-<cell>-optimal`)
 
@@ -126,13 +135,24 @@ K562 set gives Pearson 0.9195.
   the construct it was trained on (the 230 bp element plus a 51 bp constant tail for
   lentiMPRA, library adapters for DeepSTARR, or 35S enhancer + core promoter + 5′ UTR +
   barcode for plant). See the repo docs.
-- **lentiMPRA: two tails exist, and they are not interchangeable.** The `mpra_*` /
-  `mpra-*-optimal` checkpoints were trained on a tail taken from the Agarwal et al. 2025
-  Table S13 reverse primer `minP-enh-r` copied without reverse-complementing it, so it
-  repeats the right adapter and runs the minimal promoter backwards. The corrected tail
-  (minimal promoter in sense orientation, then the spacer) is now the library default.
-  Scoring these checkpoints with the corrected tail costs ~0.02 Pearson
-  (K562: 0.8793 → 0.8601), so score them with `LENTIMPRA_SUFFIX_LEGACY`.
+- **lentiMPRA: two tails exist, they are not interchangeable, and the JAX and PyTorch
+  checkpoints currently use different ones.** The original tail was taken from the
+  Agarwal et al. 2025 Table S13 reverse primer `minP-enh-r` copied without
+  reverse-complementing it, so it repeats the right adapter and runs the minimal
+  promoter backwards. The corrected tail is the minimal promoter in sense orientation
+  followed by the spacer, and it is the library default (`LENTIMPRA_SUFFIX`).
+
+  | Checkpoints | Tail | How to score |
+  |---|---|---|
+  | `jax/mpra-<cell>-optimal` | **corrected** | library default; each one also records its construct in `config.json`, and the loader reads it back |
+  | `torch/mpra_<cell>` | **legacy** | pass `LENTIMPRA_SUFFIX_LEGACY` explicitly |
+
+  Getting this wrong is not a rounding error: scoring a legacy checkpoint with the
+  corrected tail costs ~0.02 Pearson (K562: 0.8793 → 0.8601), which is about what a
+  composition-matched *scramble* costs (0.8555) — the encoder keys on the exact tail it
+  was trained on. Retraining on the corrected tail recovers the same performance
+  (every cell type within 0.003), so the two are equivalent in quality; they are just
+  not mutually compatible. The PyTorch checkpoints are pending retraining.
 - Plant test constructs use a random barcode per row, so Pearson reproduces to ~±0.0001;
   quote plant numbers to 3 decimals.
 

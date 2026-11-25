@@ -28,7 +28,16 @@ SHARED = Path('/grid/koo/home/shared/models/alphagenome_encoder')
 CARD = REPO_ROOT / 'assets' / 'hf_model_card.md'
 
 # Superseded by mpra_K562; no reason to ship it publicly.
-EXCLUDE = {'torch/mpra_K562_old'}
+# The *-legacyconstruct runs are the pre-correction lentiMPRA weights. They are kept
+# on the shared HPC folder so the controls, the Enformer baselines and the Table S4
+# sweep stay reproducible against the exact weights they were compared with, but
+# there is no reason to publish a second, subtly incompatible copy of each model.
+EXCLUDE = {
+    'torch/mpra_K562_old',
+    'jax/mpra-HepG2-optimal-legacyconstruct',
+    'jax/mpra-K562-optimal-legacyconstruct',
+    'jax/mpra-WTC11-optimal-legacyconstruct',
+}
 
 
 def collect(shared: Path):
@@ -90,11 +99,18 @@ def main():
     print('  uploaded README.md')
 
     for run, rel in items:
+        # delete_patterns makes the remote folder MIRROR the local one. Without it
+        # upload_folder only adds, so re-uploading a retrained model leaves the old
+        # weights behind: orbax names its data files by content hash, so a replaced
+        # checkpoint lands beside its predecessor instead of overwriting it. The
+        # manifest only references the current blobs, so loading still works, but the
+        # repo silently accumulates a dead copy of every superseded model.
         api.upload_folder(
             folder_path=str(run),
             path_in_repo=rel,
             repo_id=args.repo_id,
             repo_type='model',
+            delete_patterns='**',
             commit_message=f'Add {rel}',
         )
         print(f'  uploaded {rel}')
