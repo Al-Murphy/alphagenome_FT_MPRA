@@ -58,6 +58,7 @@ from scipy.stats import pearsonr, spearmanr
 from alphagenome.models import dna_output
 from alphagenome_research.model import dna_model
 
+from alphagenome_ft_mpra.model_utils import offline_organism_settings
 from alphagenome_ft_mpra.seq_loader import seq_loader  # type: ignore
 
 
@@ -613,6 +614,7 @@ def main() -> None:
     print("Loading base AlphaGenome model from Kaggle...")
     model = dna_model.create_from_kaggle(
         args.model_version,
+        organism_settings=offline_organism_settings(),
         device=None,  # Auto-detect device
     )
     print("✓ Model loaded")

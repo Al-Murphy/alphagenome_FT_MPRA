@@ -131,6 +131,7 @@ python scripts/reproduce_plant_starrseq_table.py
   - **`test_cagi5_zero_shot_base.py`** – Zero‑shot evaluation of the **base AlphaGenome model** on the CAGI5 saturation mutagenesis benchmark.
   - **`test_cagi5_zero_shot_mpra.py`** – CAGI5 evaluation of **fine‑tuned AlphaGenome MPRA models**.
   - **`test_cagi5_zero_shot_enformer_mpra.py`** – CAGI5 evaluation of **fine‑tuned Enformer MPRA models**.
+  - **`zeroshot_base_AG_mpra_predict.py`** – Zero‑shot evaluation of the **base AlphaGenome model** on PROCAP, RNA-SEQ, DNASE, ATAC and CAGE data.
 
 - **Comparison tables & plots**
   - **`create_mpra_comparison_table.py`** – Create comparison tables of MPRA model performance across models and cell lines.
